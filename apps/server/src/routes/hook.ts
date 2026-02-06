@@ -80,3 +80,31 @@ hookRouter.post('/notification', async (req, res) => {
     res.status(500).json({ error: 'Failed to send notification' });
   }
 });
+
+/**
+ * POST /api/hook/authorization
+ * Called when Claude Code needs user authorization (Notification hook event)
+ */
+hookRouter.post('/authorization', async (req, res) => {
+  try {
+    const body = req.body;
+    console.log('📨 Authorization request received:', JSON.stringify(body, null, 2));
+
+    // Extract useful info from the notification payload
+    const title = body.title || '⚠️ Claude 需要你的操作';
+    const message = body.message || body.body || '';
+    const sessionId = body.session_id || 'unknown';
+
+    await sendCardMessage({
+      type: 'authorization_required',
+      title,
+      content: message || '请在终端中确认操作',
+      sessionId,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Hook authorization error:', error);
+    res.status(500).json({ error: 'Failed to send notification' });
+  }
+});

@@ -41,7 +41,7 @@ async function main() {
   const endpoints = {
     stop: '/api/hook/stop',
     'pre-tool': '/api/hook/pre-tool',
-    notification: '/api/hook/notification',
+    notification: '/api/hook/authorization',  // 授权请求专用端点
   };
 
   const endpoint = endpoints[hookType] || endpoints.notification;

@@ -1,5 +1,8 @@
 import { Router } from 'express';
-import { sendTextMessage, sendCardMessage } from '../feishu/message.js';
+import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
+import { getOrCreateProjectGroup } from '../feishu/group.js';
+import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
+import type { RawSummary, StopHookPayload } from '../types/summary.js';
 
 export const hookRouter = Router();
 
@@ -17,18 +20,43 @@ hookRouter.use((req, res, next) => {
 
 /**
  * POST /api/hook/stop
- * Called when Claude Code stops (task complete or waiting for input)
+ * Called when Claude Code stops (task complete)
  */
 hookRouter.post('/stop', async (req, res) => {
   try {
-    const { session_id, cwd, message } = req.body;
+    const body = req.body as StopHookPayload;
+    const { session_id, summary, stop_reason } = body;
 
-    await sendCardMessage({
+    console.log('📨 Stop hook received:', {
+      session_id,
+      stop_reason,
+      hasSummary: !!summary,
+    });
+
+    // 获取或创建项目群
+    let chatId: string | undefined;
+    if (summary?.projectPath) {
+      try {
+        chatId = await getOrCreateProjectGroup(summary.projectPath);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
+        // 继续使用默认目标
+      }
+    }
+
+    // 发送初始卡片（不含 Haiku 摘要）
+    const result = await sendCardMessage({
       type: 'task_complete',
       title: '✅ Claude Code 任务完成',
-      content: message || '任务已完成，等待下一步指令',
       sessionId: session_id,
+      chatId,
+      summary: summary || undefined,
     });
+
+    // 异步生成 Haiku 摘要并更新卡片
+    if (result?.messageId && summary) {
+      generateHaikuSummaryAndUpdate(result.messageId, summary, session_id, chatId);
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -38,12 +66,50 @@ hookRouter.post('/stop', async (req, res) => {
 });
 
 /**
+ * 异步生成 Haiku 摘要并更新卡片
+ */
+async function generateHaikuSummaryAndUpdate(
+  messageId: string,
+  summary: RawSummary,
+  sessionId: string,
+  chatId?: string
+): Promise<void> {
+  try {
+    const haikuSummary = await generateTaskSummary(summary);
+
+    if (haikuSummary) {
+      await updateCardMessage(messageId, {
+        type: 'task_complete',
+        title: '✅ Claude Code 任务完成',
+        sessionId,
+        chatId,
+        summary,
+        haikuSummary,
+      });
+    }
+  } catch (error) {
+    console.error('Failed to generate/update Haiku summary:', error);
+    // 不影响主流程
+  }
+}
+
+/**
  * POST /api/hook/pre-tool
  * Called before a tool is executed (for sensitive commands)
  */
 hookRouter.post('/pre-tool', async (req, res) => {
   try {
-    const { session_id, tool, tool_input, options } = req.body;
+    const { session_id, tool, tool_input, options, cwd } = req.body;
+
+    // 获取或创建项目群
+    let chatId: string | undefined;
+    if (cwd) {
+      try {
+        chatId = await getOrCreateProjectGroup(cwd);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
+      }
+    }
 
     // Extract command for Bash tool
     const command = tool === 'Bash' ? tool_input?.command : JSON.stringify(tool_input);
@@ -54,6 +120,7 @@ hookRouter.post('/pre-tool', async (req, res) => {
       content: `工具: **${tool}**`,
       command,
       sessionId: session_id,
+      chatId,
       options: options || undefined,
     });
 
@@ -70,9 +137,19 @@ hookRouter.post('/pre-tool', async (req, res) => {
  */
 hookRouter.post('/notification', async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, cwd } = req.body;
 
-    await sendTextMessage(message || 'Claude Code notification');
+    // 获取或创建项目群
+    let chatId: string | undefined;
+    if (cwd) {
+      try {
+        chatId = await getOrCreateProjectGroup(cwd);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
+      }
+    }
+
+    await sendTextMessage(message || 'Claude Code notification', chatId);
 
     res.json({ success: true });
   } catch (error) {
@@ -94,12 +171,24 @@ hookRouter.post('/authorization', async (req, res) => {
     const title = body.title || '⚠️ Claude 需要你的操作';
     const message = body.message || body.body || '';
     const sessionId = body.session_id || 'unknown';
+    const cwd = body.cwd;
+
+    // 获取或创建项目群
+    let chatId: string | undefined;
+    if (cwd) {
+      try {
+        chatId = await getOrCreateProjectGroup(cwd);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
+      }
+    }
 
     await sendCardMessage({
       type: 'authorization_required',
       title,
       content: message || '请在终端中确认操作',
       sessionId,
+      chatId,
     });
 
     res.json({ success: true });

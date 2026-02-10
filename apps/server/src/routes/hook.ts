@@ -2,12 +2,30 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { Router } from 'express';
 import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
-import { getOrCreateProjectGroup } from '../feishu/group.js';
+import { getOrCreateProjectGroup, loadGroupMappings } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
 import { registerMessageSession } from '../services/message-session-map.js';
 import type { RawSummary, StopHookPayload } from '../types/summary.js';
+import { isHighRiskCommand, sendVoiceAlert } from '../services/voice-alert.js';
+import { authStore } from '../store/auth-store.js';
+import { log } from '../utils/log.js';
 
 export const hookRouter = Router();
+
+/**
+ * 获取项目管理员用户ID（Phase4：用于语音提醒）
+ */
+async function getAdminUserId(projectPath: string | undefined): Promise<string | null> {
+  if (!projectPath) return null;
+
+  try {
+    const mappings = loadGroupMappings();
+    const projectConfig = mappings[projectPath];
+    return projectConfig?.adminUserId || null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 发送卡片消息，群消息失败时自动重建群并重试一次
@@ -138,7 +156,21 @@ hookRouter.post('/pre-tool', async (req, res) => {
     }
 
     // Extract command for Bash tool
-    const command = toolName === 'Bash' ? tool_input?.command : JSON.stringify(tool_input);
+    const command = tool === 'Bash' ? tool_input?.command : JSON.stringify(tool_input);
+
+    // Phase4: 检测高风险命令并触发语音提醒
+    if (command && isHighRiskCommand(command)) {
+      // 获取项目管理员配置（从project-groups.json）
+      const adminUserId = await getAdminUserId(cwd);
+      if (adminUserId && process.env.FEISHU_VOICE_ENABLED === 'true') {
+        sendVoiceAlert({
+          userId: adminUserId,
+          command: tool || 'unknown',
+          projectPath: cwd || 'unknown',
+          sessionId: session_id || 'unknown',
+        }).catch(err => console.error('Voice alert failed (non-blocking):', err));
+      }
+    }
 
     const result = await sendCardMessage({
       type: options ? 'authorization_required' : 'sensitive_command',

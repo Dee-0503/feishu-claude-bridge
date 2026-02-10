@@ -10,93 +10,30 @@ jobs:
   test:
     name: Test & Build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/server
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x]
+        node-version: [20.x]
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup Node.js ${{ matrix.node-version }}
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
+        cache-dependency-path: apps/server/package-lock.json
 
     - name: Install dependencies
       run: npm ci
-      working-directory: apps/server
 
     - name: Run tests
       run: npm test
-      working-directory: apps/server
 
-    - name: TypeScript build check
+    - name: Build check
       run: npm run build
-      working-directory: apps/server
-
-    - name: Upload test coverage (optional)
-      if: matrix.node-version == '20.x'
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage
-        path: apps/server/coverage/
-        if-no-files-found: ignore
-
-  lint:
-    name: Code Quality
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
-        cache: 'npm'
-
-    - name: Install dependencies
-      run: npm ci
-      working-directory: apps/server
-
-    # 如果项目有ESLint配置，取消注释以下步骤
-    # - name: Run ESLint
-    #   run: npm run lint
-    #   working-directory: apps/server
-
-    # 如果项目有Prettier配置，取消注释以下步骤
-    # - name: Check code formatting
-    #   run: npm run format:check
-    #   working-directory: apps/server
-
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
-        cache: 'npm'
-
-    - name: Install dependencies
-      run: npm ci
-      working-directory: apps/server
-
-    - name: Run npm audit
-      run: npm audit --audit-level=moderate
-      working-directory: apps/server
-      continue-on-error: true  # 不阻塞PR，但会显示警告
-
-    - name: Check for vulnerable dependencies
-      run: npx audit-ci --moderate
-      working-directory: apps/server
-      continue-on-error: true

@@ -27,3 +27,6 @@ pnpm-debug.log*
 
 # Test coverage
 coverage/
+
+# Runtime data (project group mappings contain local paths)
+apps/server/data/project-groups.json

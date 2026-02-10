@@ -1,0 +1,32 @@
+{
+  "/Users/ceemac/my_product/feishu-claude-bridge-worktrees": {
+    "chatId": "oc_f76c304619bb3387f1a92f6e84e40d0c",
+    "projectName": "feishu-claude-bridge-worktrees",
+    "projectPath": "/Users/ceemac/my_product/feishu-claude-bridge-worktrees",
+    "createdAt": "2026-02-09T07:59:31.068Z"
+  },
+  "/Users/ceemac/test-project": {
+    "chatId": "oc_60353f1073f12a398b11e86b6dbb31af",
+    "projectName": "test-project",
+    "projectPath": "/Users/ceemac/test-project",
+    "createdAt": "2026-02-09T15:20:45.246Z"
+  },
+  "/Users/ceemac/test-project-v2": {
+    "chatId": "oc_1198b8e8e5d395b4b0aeab3b35c23036",
+    "projectName": "test-project-v2",
+    "projectPath": "/Users/ceemac/test-project-v2",
+    "createdAt": "2026-02-09T15:25:44.473Z"
+  },
+  "/Users/ceemac/test-debug": {
+    "chatId": "oc_16f63863bc60763ad4d46b3b809ae72f",
+    "projectName": "test-debug",
+    "projectPath": "/Users/ceemac/test-debug",
+    "createdAt": "2026-02-09T15:28:01.886Z"
+  },
+  "/Users/test/project": {
+    "chatId": "oc_36d179d249f526b370add01a5863ab0d",
+    "projectName": "project",
+    "projectPath": "/Users/test/project",
+    "createdAt": "2026-02-10T00:49:38.619Z"
+  }
+}

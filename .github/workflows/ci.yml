@@ -27,6 +27,8 @@ jobs:
 
     - name: Install dependencies
       run: npm ci
+      working-directory: apps/server
+      working-directory: apps/server
 
     - name: Run tests
       run: npm test
@@ -60,6 +62,7 @@ jobs:
 
     - name: Install dependencies
       run: npm ci
+      working-directory: apps/server
 
     # 如果项目有ESLint配置，取消注释以下步骤
     # - name: Run ESLint
@@ -87,6 +90,7 @@ jobs:
 
     - name: Install dependencies
       run: npm ci
+      working-directory: apps/server
 
     - name: Run npm audit
       run: npm audit --audit-level=moderate

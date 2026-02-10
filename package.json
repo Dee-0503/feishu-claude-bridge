@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "npm run dev --workspace=apps/server",
     "build": "npm run build --workspaces",
-    "start": "npm run start --workspace=apps/server"
+    "start": "npm run start --workspace=apps/server",
+    "test:card": "tsx scripts/test-card-callback.ts"
   },
   "workspaces": [
     "apps/*",

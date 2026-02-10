@@ -2,11 +2,15 @@ import 'dotenv/config';
 import express from 'express';
 import { hookRouter } from './routes/hook.js';
 import { feishuRouter } from './routes/feishu.js';
+import { initMessageSessionMap } from './services/message-session-map.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+
+// Initialize services
+initMessageSessionMap();
 
 // Health check
 app.get('/health', (_req, res) => {

@@ -2,13 +2,16 @@ import 'dotenv/config';
 import express from 'express';
 import { hookRouter } from './routes/hook.js';
 import { feishuRouter } from './routes/feishu.js';
-import { startWSClient, stopWSClient } from './feishu/ws-client.js';
+import { initMessageSessionMap } from './services/message-session-map.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const USE_LONG_CONNECTION = process.env.FEISHU_USE_LONG_CONNECTION === 'true';
 
 app.use(express.json());
+
+// Initialize services
+initMessageSessionMap();
 
 // Health check
 app.get('/health', (_req, res) => {

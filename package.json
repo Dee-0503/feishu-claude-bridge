@@ -5,9 +5,9 @@
   "description": "Bridge service connecting Claude Code with Feishu for notifications and authorization",
   "scripts": {
     "dev": "npm run dev --workspace=apps/server",
-    "build": "npm run build --workspaces",
-    "start": "npm run start --workspace=apps/server",
-    "test:card": "tsx scripts/test-card-callback.ts"
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "start": "npm run start --workspace=apps/server"
   },
   "workspaces": [
     "apps/*",

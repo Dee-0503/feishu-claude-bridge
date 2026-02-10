@@ -2,42 +2,10 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { Router } from 'express';
 import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
-import type { SendCardResult, SendMessageOptions } from '../feishu/message.js';
 import { getOrCreateProjectGroup } from '../feishu/group.js';
-import { authStore } from '../store/auth-store.js';
-import { permissionRules } from '../store/permission-rules.js';
-import { generateCommandExplanation } from '../services/command-explain.js';
-import { log } from '../utils/log.js';
-
-/**
- * Build a dynamic title prefix from cwd and session_id.
- * Format: `[feature/my-branch] / #ab12`
- */
-export function buildTitleTag(cwd?: string, sessionId?: string): string {
-  const parts: string[] = [];
-  if (cwd) {
-    let label: string;
-    try {
-      label = execSync('git branch --show-current', {
-        cwd,
-        encoding: 'utf-8',
-        timeout: 3000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-    } catch {
-      label = '';
-      log('warn', 'git_branch_fallback', { cwd, reason: 'git command failed' });
-    }
-    if (!label) {
-      label = path.basename(cwd);
-    }
-    parts.push(`[${label}]`);
-  }
-  if (sessionId) {
-    parts.push(`#${sessionId.substring(0, 4)}`);
-  }
-  return parts.join(' / ');
-}
+import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
+import { registerMessageSession } from '../services/message-session-map.js';
+import type { RawSummary, StopHookPayload } from '../types/summary.js';
 
 export const hookRouter = Router();
 
@@ -74,31 +42,47 @@ hookRouter.use((req, res, next) => {
 
 /**
  * POST /api/hook/stop
- * Called when Claude Code stops (task complete or waiting for input)
+ * Called when Claude Code stops (task complete)
  */
 hookRouter.post('/stop', async (req, res) => {
   try {
-    const { session_id, cwd, project_dir, message } = req.body;
-    const projectRoot = project_dir || cwd;
+    const body = req.body as StopHookPayload;
+    const { session_id, summary, stop_reason } = body;
 
-    // Resolve project group if projectRoot is provided
+    console.log('📨 Stop hook received:', {
+      session_id,
+      stop_reason,
+      hasSummary: !!summary,
+    });
+
+    // 获取或创建项目群
     let chatId: string | undefined;
-    if (projectRoot) {
+    if (summary?.projectPath) {
       try {
-        chatId = await getOrCreateProjectGroup(projectRoot);
-      } catch {
-        // Fall back to default target
+        chatId = await getOrCreateProjectGroup(summary.projectPath);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
       }
     }
 
-    const tag = buildTitleTag(cwd, session_id);
-    await sendWithRetry({
+    // 发送初始卡片（不含 Haiku 摘要）
+    const result = await sendCardMessage({
       type: 'task_complete',
-      title: tag ? `✅ ${tag} 任务完成` : '✅ Claude Code 任务完成',
-      content: message || '任务已完成，等待下一步指令',
+      title: '✅ Claude Code 任务完成',
       sessionId: session_id,
       chatId,
-    }, projectRoot);
+      summary: summary || undefined,
+    });
+
+    // 注册 message → session 映射
+    if (result?.messageId && session_id) {
+      registerMessageSession(result.messageId, session_id, result.chatId, summary?.projectPath);
+    }
+
+    // 异步生成 Haiku 摘要并更新卡片
+    if (result?.messageId && summary) {
+      generateHaikuSummaryAndUpdate(result.messageId, summary, session_id, chatId);
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -108,120 +92,70 @@ hookRouter.post('/stop', async (req, res) => {
 });
 
 /**
+ * 异步生成 Haiku 摘要并更新卡片
+ */
+async function generateHaikuSummaryAndUpdate(
+  messageId: string,
+  summary: RawSummary,
+  sessionId: string,
+  chatId?: string
+): Promise<void> {
+  try {
+    const haikuSummary = await generateTaskSummary(summary);
+
+    if (haikuSummary) {
+      await updateCardMessage(messageId, {
+        type: 'task_complete',
+        title: '✅ Claude Code 任务完成',
+        sessionId,
+        chatId,
+        summary,
+        haikuSummary,
+      });
+    }
+  } catch (error) {
+    console.error('Failed to generate/update Haiku summary:', error);
+  }
+}
+
+/**
  * POST /api/hook/pre-tool
  * Called before a tool is executed.
  * Creates an AuthRequest, sends a Feishu authorization card, and returns requestId.
  */
 hookRouter.post('/pre-tool', async (req, res) => {
   try {
-    const { session_id, tool_name, tool, tool_input, options, cwd, project_dir } = req.body;
-    const projectRoot = project_dir || cwd;
-    const toolName = tool_name || tool; // Claude Code uses tool_name
+    const { session_id, tool, tool_input, options, cwd } = req.body;
+
+    // 获取或创建项目群
+    let chatId: string | undefined;
+    if (cwd) {
+      try {
+        chatId = await getOrCreateProjectGroup(cwd);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
+      }
+    }
 
     // Extract command for Bash tool
     const command = toolName === 'Bash' ? tool_input?.command : JSON.stringify(tool_input);
 
-    // Check if a permission rule already allows this
-    const matchedRule = permissionRules.match(toolName, command, cwd);
-    if (matchedRule) {
-      log('info', 'auth_rule_matched', {
-        ruleId: matchedRule.id,
-        tool: toolName,
-        command: command?.substring(0, 100),
-      });
-      res.json({
-        requestId: null,
-        decision: 'allow',
-        reason: '匹配已有规则',
-        ruleId: matchedRule.id,
-      });
-      return;
-    }
-
-    // Ensure options always has values — empty/missing defaults to ['Yes', 'No']
-    const resolvedOptions: string[] =
-      Array.isArray(options) && options.length > 0 ? options : ['Yes', 'No'];
-
-    // Create auth request
-    const authRequest = authStore.create({
-      sessionId: session_id,
-      tool: toolName,
-      toolInput: tool_input,
+    const result = await sendCardMessage({
+      type: options ? 'authorization_required' : 'sensitive_command',
+      title: options ? '⚠️ Claude 需要授权' : '🔔 敏感命令执行',
+      content: `工具: **${tool}**`,
       command,
-      options: resolvedOptions,
-      cwd,
+      sessionId: session_id,
+      chatId,
+      options: options || undefined,
     });
 
-    // Resolve project group
-    let chatId: string | undefined;
-    if (projectRoot) {
-      try {
-        chatId = await getOrCreateProjectGroup(projectRoot);
-      } catch {
-        // Fall back to default target
-      }
+    // 注册 message → session 映射
+    if (result?.messageId && session_id) {
+      registerMessageSession(result.messageId, session_id, result.chatId, cwd);
     }
 
-    // Build dynamic title
-    const tag = buildTitleTag(cwd, session_id);
-    const authTitle = tag ? `🔔 ${tag} 需要授权` : '🔔 Claude 需要授权';
-
-    // Send Feishu authorization card (immediately, without AI explanation)
-    const cardResult = await sendWithRetry({
-      type: 'authorization_required',
-      title: authTitle,
-      content: `工具: **${toolName}**`,
-      command,
-      sessionId: session_id,
-      options: resolvedOptions,
-      chatId,
-      requestId: authRequest.requestId,
-    }, projectRoot);
-
-    // Store feishu message ID for later card update
-    if (cardResult) {
-      authRequest.feishuMessageId = cardResult.messageId;
-      authRequest.chatId = cardResult.chatId;
-    }
-
-    res.json({ requestId: authRequest.requestId });
-
-    // Async: generate AI command explanation and update card
-    // This runs after the response is sent, so it doesn't block the hook script
-    if (cardResult && resolvedOptions.length > 0 && command) {
-      generateCommandExplanation(toolName, command, resolvedOptions, cwd)
-        .then(async (explanation) => {
-          if (!explanation || !cardResult.messageId) return;
-
-          // Only update if the request is still pending (user hasn't decided yet)
-          const currentReq = authStore.get(authRequest.requestId);
-          if (!currentReq || currentReq.status !== 'pending') return;
-
-          await updateCardMessage(cardResult.messageId, {
-            type: 'authorization_required',
-            title: authTitle,
-            content: `工具: **${toolName}**`,
-            command,
-            sessionId: session_id,
-            options: resolvedOptions,
-            chatId,
-            requestId: authRequest.requestId,
-            commandSummary: explanation.summary,
-            optionExplanations: explanation.options,
-          });
-
-          log('info', 'auth_card_updated_with_explanation', {
-            requestId: authRequest.requestId,
-            summary: explanation.summary,
-          });
-        })
-        .catch((error) => {
-          log('warn', 'explain_update_failed', {
-            requestId: authRequest.requestId,
-            error: String(error),
-          });
-        });
-    }
+    res.json({ success: true });
   } catch (error) {
     log('error', 'hook_pre_tool_error', { error: String(error) });
     res.status(500).json({ error: 'Failed to create auth request' });
@@ -269,29 +203,19 @@ hookRouter.get('/auth-poll', (req, res) => {
  */
 hookRouter.post('/notification', async (req, res) => {
   try {
-    const { message, cwd, project_dir, session_id } = req.body;
-    const projectRoot = project_dir || cwd;
+    const { message, cwd } = req.body;
 
-    // Resolve project group if projectRoot is provided
+    // 获取或创建项目群
     let chatId: string | undefined;
-    if (projectRoot) {
+    if (cwd) {
       try {
-        chatId = await getOrCreateProjectGroup(projectRoot);
-      } catch {
-        // Fall back to default target
+        chatId = await getOrCreateProjectGroup(cwd);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
       }
     }
 
-    const tag = buildTitleTag(cwd, session_id);
-    const title = tag ? `🔔 ${tag} 通知` : '🔔 Claude Code 通知';
-
-    await sendWithRetry({
-      type: 'task_complete',
-      title,
-      content: message || 'Claude Code notification',
-      sessionId: session_id,
-      chatId,
-    }, projectRoot);
+    await sendTextMessage(message || 'Claude Code notification', chatId);
 
     res.json({ success: true });
   } catch (error) {
@@ -320,6 +244,50 @@ hookRouter.post('/authorization', async (req, res) => {
       content: message || '请在终端中确认操作',
       sessionId,
     });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Hook authorization error:', error);
+    res.status(500).json({ error: 'Failed to send notification' });
+  }
+});
+
+/**
+ * POST /api/hook/authorization
+ * Called when Claude Code needs user authorization (Notification hook event)
+ */
+hookRouter.post('/authorization', async (req, res) => {
+  try {
+    const body = req.body;
+    console.log('📨 Authorization request received:', JSON.stringify(body, null, 2));
+
+    const title = body.title || '⚠️ Claude 需要你的操作';
+    const message = body.message || body.body || '';
+    const sessionId = body.session_id || 'unknown';
+    const cwd = body.cwd;
+
+    // 获取或创建项目群
+    let chatId: string | undefined;
+    if (cwd) {
+      try {
+        chatId = await getOrCreateProjectGroup(cwd);
+      } catch (error) {
+        console.error('Failed to get/create project group:', error);
+      }
+    }
+
+    const result = await sendCardMessage({
+      type: 'authorization_required',
+      title,
+      content: message || '请在终端中确认操作',
+      sessionId,
+      chatId,
+    });
+
+    // 注册 message → session 映射
+    if (result?.messageId && sessionId) {
+      registerMessageSession(result.messageId, sessionId, result.chatId, cwd);
+    }
 
     res.json({ success: true });
   } catch (error) {

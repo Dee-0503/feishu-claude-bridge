@@ -3,15 +3,25 @@
   "hooks": {
     "Stop": [
       {
-        "command": "node /path/to/feishu-claude-bridge/hooks/notify.js stop",
-        "async": true
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/feishu-claude-bridge/hooks/notify.js stop"
+          }
+        ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "tool == \"Bash\" && tool_input.command matches \"(git push|rm -rf|docker|npm publish)\"",
-        "command": "node /path/to/feishu-claude-bridge/hooks/notify.js pre-tool",
-        "async": true
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/feishu-claude-bridge/hooks/notify.js pre-tool",
+            "timeout_ms": 180000
+          }
+        ]
       }
     ]
   }

@@ -10,9 +10,6 @@ jobs:
   test:
     name: Test & Build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/server
 
     strategy:
       matrix:
@@ -27,7 +24,6 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
-        cache-dependency-path: package-lock.json
 
     - name: Install dependencies
       run: npm ci
@@ -35,5 +31,5 @@ jobs:
     - name: Run tests
       run: npm test
 
-    - name: Build check
+    - name: Build
       run: npm run build

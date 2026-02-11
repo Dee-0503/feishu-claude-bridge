@@ -179,3 +179,29 @@ export function getProjectPathByChatId(chatId: string): string | null {
   }
   return null;
 }
+
+/**
+ * Phase4: 获取项目的管理员用户ID（用于发送电话加急提醒）
+ */
+export async function getAdminUserIdForProject(projectPath: string): Promise<string | null> {
+  const mappings = loadGroupMappings();
+  const groupInfo = mappings[projectPath];
+
+  if (!groupInfo) {
+    log('warn', 'get_admin_no_group_mapping', { projectPath });
+    return null;
+  }
+
+  // 检查是否启用语音提醒
+  if (groupInfo.enableVoiceAlert === false) {
+    log('info', 'get_admin_voice_disabled', { projectPath });
+    return null;
+  }
+
+  if (!groupInfo.adminUserId) {
+    log('warn', 'get_admin_no_userid', { projectPath });
+    return null;
+  }
+
+  return groupInfo.adminUserId;
+}

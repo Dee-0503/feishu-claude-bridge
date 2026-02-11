@@ -1,31 +1,15 @@
 import path from 'path';
 import { execSync } from 'child_process';
 import { Router } from 'express';
-import { sendTextMessage, sendCardMessage, updateCardMessage, type SendMessageOptions, type SendCardResult } from '../feishu/message.js';
-import { getOrCreateProjectGroup, loadGroupMappings } from '../feishu/group.js';
+import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
+import { getOrCreateProjectGroup, getAdminUserIdForProject } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
 import { registerMessageSession } from '../services/message-session-map.js';
-import type { RawSummary, StopHookPayload } from '../types/summary.js';
+import { alertScheduler } from '../services/voice-alert.js';
 import { log } from '../utils/log.js';
-import { authStore } from '../store/auth-store.js';
-import { isHighRiskCommand, sendVoiceAlert } from '../services/voice-alert.js';
+import type { RawSummary, StopHookPayload } from '../types/summary.js';
 
 export const hookRouter = Router();
-
-/**
- * 获取项目管理员用户ID（Phase4：用于语音提醒）
- */
-async function getAdminUserId(projectPath: string | undefined): Promise<string | null> {
-  if (!projectPath) return null;
-
-  try {
-    const mappings = loadGroupMappings();
-    const projectConfig = mappings[projectPath];
-    return projectConfig?.adminUserId || null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * 发送卡片消息，群消息失败时自动重建群并重试一次
@@ -97,6 +81,21 @@ hookRouter.post('/stop', async (req, res) => {
       registerMessageSession(result.messageId, session_id, result.chatId, summary?.projectPath);
     }
 
+    // Phase4: 安排任务完成超时提醒
+    if (result?.messageId && chatId && summary?.projectPath && process.env.FEISHU_VOICE_ENABLED === 'true') {
+      const adminUserId = await getAdminUserIdForProject(summary.projectPath).catch(() => null);
+      if (adminUserId) {
+        const delayMinutes = parseInt(process.env.VOICE_ALERT_TASK_COMPLETE_DELAY_MINUTES || '10');
+        alertScheduler.scheduleAlert(result.messageId, {
+          chatId,
+          adminUserId,
+          sessionId: session_id,
+          type: 'task_complete',
+          delayMinutes,
+        });
+      }
+    }
+
     // 异步生成 Haiku 摘要并更新卡片
     if (result?.messageId && summary) {
       generateHaikuSummaryAndUpdate(result.messageId, summary, session_id, chatId);
@@ -156,21 +155,7 @@ hookRouter.post('/pre-tool', async (req, res) => {
     }
 
     // Extract command for Bash tool
-    const command = tool === 'Bash' ? tool_input?.command : JSON.stringify(tool_input);
-
-    // Phase4: 检测高风险命令并触发语音提醒
-    if (command && isHighRiskCommand(command)) {
-      const adminUserId = await getAdminUserId(cwd);
-      if (adminUserId && process.env.FEISHU_VOICE_ENABLED === 'true') {
-        // 异步发送语音提醒，不阻塞主流程
-        sendVoiceAlert({
-          userId: adminUserId,
-          command: tool || 'unknown',
-          projectPath: cwd || 'unknown',
-          sessionId: session_id || 'unknown',
-        }).catch(err => log('error', 'voice_alert_send_failed', { error: String(err) }));
-      }
-    }
+    const command = toolName === 'Bash' ? tool_input?.command : JSON.stringify(tool_input);
 
     const result = await sendCardMessage({
       type: options ? 'authorization_required' : 'sensitive_command',

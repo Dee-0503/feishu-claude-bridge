@@ -5,6 +5,7 @@ import { getProjectPathByChatId } from '../feishu/group.js';
 import { sendTextMessage } from '../feishu/message.js';
 import { getSessionByMessageId } from '../services/message-session-map.js';
 import { dispatch, handleSessionChoice } from '../services/session-manager.js';
+import { alertScheduler } from '../services/voice-alert.js';
 import { log } from '../utils/log.js';
 
 export const feishuRouter = Router();
@@ -101,6 +102,12 @@ async function handleMessage(event: FeishuMessageEvent): Promise<void> {
   if (botOpenId && parsed.senderOpenId === botOpenId) {
     console.log('🤖 Ignoring bot\'s own message');
     return;
+  }
+
+  // Phase4: 如果用户回复了任务完成通知，取消电话提醒
+  if (parsed.isReply && parsed.parentMessageId) {
+    alertScheduler.cancelAlert(parsed.parentMessageId);
+    log('info', 'voice_alert_cancel_by_reply', { messageId: parsed.parentMessageId });
   }
 
   // 忽略空消息
@@ -247,6 +254,13 @@ async function handleCardAction(event: FeishuCardActionEvent): Promise<void> {
   }
 
   console.log('🔘 Card action:', value);
+
+  // Phase4: 用户点击卡片按钮，取消电话提醒
+  const parentMessageId = event.context?.open_message_id;
+  if (parentMessageId) {
+    alertScheduler.cancelAlert(parentMessageId);
+    log('info', 'voice_alert_cancel_by_action', { messageId: parentMessageId, action: value.action });
+  }
 
   // 处理会话选择
   if (value.action === 'choose_session' || value.action === 'new_session') {

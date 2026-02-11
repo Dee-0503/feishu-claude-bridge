@@ -41,12 +41,37 @@ export function buildTitleTag(cwd?: string, sessionId?: string): string {
 
 /**
  * Handle incoming message events from Feishu.
- * Currently logs the message for debugging purposes.
+ * Routes messages to appropriate session based on message type:
+ * - Reply to notification card → continue existing session (resume)
+ * - @mention bot → start new session in project directory
  */
 export async function handleMessage(event: any): Promise<void> {
   const message = event.message;
   const content = JSON.parse(message.content || '{}');
-  log('info', 'feishu_message_received', { text: content.text?.substring(0, 50) });
+  const text = content.text || '';
+
+  // Log complete message structure for analysis
+  log('info', 'feishu_message_received', {
+    text: text.substring(0, 50),
+    messageId: message.message_id,
+    chatId: message.chat_id,
+    parentId: message.parent_id,
+    rootId: message.root_id,
+    mentions: message.mentions,
+    messageType: message.message_type,
+    chatType: message.chat_type,
+  });
+
+  // TODO: Phase 2 integration
+  // 1. Check if message.parent_id exists → reply to card → resume session
+  //    - Find sessionId by parent message ID
+  //    - Call session-manager to resume
+  // 2. Check if bot is mentioned → new task
+  //    - Find project path by chat_id
+  //    - Call session-manager to start new session
+  // 3. Otherwise → ignore or send help message
+
+  console.log('[DEBUG] Full message event:', JSON.stringify(event, null, 2));
 }
 
 /**

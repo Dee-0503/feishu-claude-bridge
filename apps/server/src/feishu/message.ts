@@ -111,12 +111,14 @@ export async function sendCardMessage(options: SendMessageOptions): Promise<Send
       },
     });
 
+    console.log('[DEBUG] Feishu API response:', JSON.stringify(response, null, 2));
+
     if (response.code !== 0) {
       throw new Error(`Feishu API error ${response.code}: ${response.msg}`);
     }
 
     const messageId = response.data?.message_id || '';
-    log('info', 'card_message_sent', { title: options.title, messageId });
+    log('info', 'card_message_sent', { title: options.title, messageId, chatId: targetId });
 
     return { messageId, chatId: targetId };
   } catch (error) {

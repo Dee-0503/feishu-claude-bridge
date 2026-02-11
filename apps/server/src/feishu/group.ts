@@ -65,38 +65,21 @@ export function saveGroupMapping(projectPath: string, info: GroupInfo): void {
 
 /**
  * 从项目路径提取项目名
+ * 直接使用最后的目录名（包括worktree分支名）
  */
 export function extractProjectName(projectPath: string): string {
-  // 处理 worktree 路径，提取真实项目名
-  // 例如：/Users/ceemac/my_product/feishu-claude-bridge-worktrees/phase2
-  // 应该返回：feishu-claude-bridge
-
-  const baseName = path.basename(projectPath);
-
-  // 检查是否是 worktree 目录
-  if (projectPath.includes('-worktrees/')) {
-    const match = projectPath.match(/\/([^/]+)-worktrees\//);
-    if (match) {
-      return match[1];
-    }
-  }
-
-  return baseName;
+  // 直接使用最后一级目录名
+  // 例如：/path/to/feishu-claude-bridge-worktrees/integration → integration
+  return path.basename(projectPath);
 }
 
 /**
- * 获取项目的规范化路径（worktree 返回主项目路径）
+ * 获取项目的规范化路径
+ * 不做任何归一化，每个目录独立映射（包括worktree分支）
  */
 export function getNormalizedProjectPath(projectPath: string): string {
-  // 如果是 worktree，返回主项目路径
-  // 例如：/path/to/project-worktrees/branch → /path/to/project-worktrees
-  if (projectPath.includes('-worktrees/')) {
-    const parts = projectPath.split('/');
-    const worktreeIndex = parts.findIndex(p => p.endsWith('-worktrees'));
-    if (worktreeIndex !== -1) {
-      return parts.slice(0, worktreeIndex + 1).join('/');
-    }
-  }
+  // 直接返回原始路径，不做归一化
+  // 这样每个worktree分支都有独立的群
   return projectPath;
 }
 

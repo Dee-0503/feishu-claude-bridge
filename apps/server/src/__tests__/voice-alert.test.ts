@@ -184,7 +184,6 @@ describe('voice-alert', () => {
       // 重新安排相同 messageId 的提醒
       alertScheduler.scheduleAlert('msg_123', {
         chatId: 'chat_123',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_123',
         type: 'authorization',
         delayMinutes: 10, // 延迟时间变化

@@ -58,6 +58,8 @@ export interface StopHookPayload {
   hook_event_name?: string;
   stop_reason?: string;
   cwd?: string;
+  project_dir?: string;
+  message?: string;
   // 从 notify.js 提取的摘要
   summary?: RawSummary;
   timestamp?: string;

@@ -27,6 +27,10 @@ export interface FeishuCardActionEvent {
     value: string;
     tag: string;
   };
+  context?: {
+    open_message_id?: string;
+    open_chat_id?: string;
+  };
 }
 
 /** 解析后的飞书消息 */

@@ -1,7 +1,7 @@
 import path from 'path';
 import { execSync } from 'child_process';
 import { Router } from 'express';
-import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
+import { sendTextMessage, sendCardMessage, updateCardMessage, type SendMessageOptions, type SendCardResult } from '../feishu/message.js';
 import { getOrCreateProjectGroup } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
 import { registerMessageSession } from '../services/message-session-map.js';

@@ -89,10 +89,12 @@ export function extractProjectName(projectPath: string): string {
  */
 export function getNormalizedProjectPath(projectPath: string): string {
   // 如果是 worktree，返回主项目路径
+  // 例如：/path/to/project-worktrees/branch → /path/to/project-worktrees
   if (projectPath.includes('-worktrees/')) {
-    const match = projectPath.match(/^(.+)-worktrees\/.+$/);
-    if (match) {
-      return match[1];
+    const parts = projectPath.split('/');
+    const worktreeIndex = parts.findIndex(p => p.endsWith('-worktrees'));
+    if (worktreeIndex !== -1) {
+      return parts.slice(0, worktreeIndex + 1).join('/');
     }
   }
   return projectPath;

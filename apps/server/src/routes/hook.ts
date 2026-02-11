@@ -64,6 +64,12 @@ hookRouter.use((req, res, next) => {
   const secret = req.headers['x-hook-secret'];
   const expectedSecret = process.env.HOOK_SECRET;
 
+  console.log('[DEBUG] Hook auth:', {
+    received: secret,
+    expected: expectedSecret,
+    match: secret === expectedSecret
+  });
+
   if (expectedSecret && secret !== expectedSecret) {
     res.status(401).json({ error: 'Unauthorized' });
     return;

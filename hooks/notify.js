@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 
 /**
- * Claude Code Hook Script - Phase 3
+ * Claude Code Hook Script - Phase 3+
  * Sends notifications to Feishu Bridge server.
- * For PreToolUse hooks: blocks and polls for remote authorization decision.
  *
- * Usage: This script is called by Claude Code hooks with stdin input
- *   node notify.js stop          — fire-and-forget task completion
- *   node notify.js pre-tool      — blocking auth flow via Feishu
- *   node notify.js notification  — fire-and-forget generic notification
+ * Hook types:
+ *   node notify.js stop               — fire-and-forget task completion
+ *   node notify.js pre-tool           — safe-command filter only (no blocking)
+ *   node notify.js permission-request — blocking auth flow via Feishu (has permission_suggestions)
+ *   node notify.js notification       — fire-and-forget generic notification
  */
 
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const pathModule = require('path');
 
 // Configuration
 const BRIDGE_URL = process.env.FEISHU_BRIDGE_URL || 'http://localhost:3000';
@@ -58,6 +60,25 @@ function isSafeCommand(command) {
   return SAFE_COMMANDS.some(pattern => pattern.test(trimmed));
 }
 
+/**
+ * Find git repository root by walking up from cwd.
+ * This prevents npm workspace sub-directories (e.g. apps/server)
+ * from being used as the project path.
+ */
+function findGitRoot(startDir) {
+  if (!startDir) return null;
+  let dir = startDir;
+  while (true) {
+    if (fs.existsSync(pathModule.join(dir, '.git'))) {
+      return dir;
+    }
+    const parent = pathModule.dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
+  }
+  return null;
+}
+
 async function main() {
   // Read stdin
   let inputData = '';
@@ -72,7 +93,23 @@ async function main() {
     hookData = { message: inputData };
   }
 
+  // Debug: log project dir resolution
+  console.error(`[notify] Hook type: ${process.argv[2]}, hookData.cwd: ${hookData.cwd}, process.cwd(): ${process.cwd()}, CLAUDE_PROJECT_DIR: ${process.env.CLAUDE_PROJECT_DIR || '(unset)'}`);
+
   const hookType = process.argv[2] || process.env.HOOK_TYPE || 'notification';
+
+  // Filter out noise notifications that don't need to be sent to Feishu
+  if (hookType === 'notification') {
+    const msg = hookData.message || hookData.body || '';
+    const FILTERED_PATTERNS = [
+      /waiting for your input/i,
+      /waiting for input/i,
+    ];
+    if (FILTERED_PATTERNS.some(p => p.test(msg))) {
+      console.error(`[notify] Filtered notification: ${msg.substring(0, 60)}`);
+      process.exit(0);
+    }
+  }
 
   const payload = {
     ...hookData,
@@ -83,14 +120,21 @@ async function main() {
   const endpoints = {
     stop: '/api/hook/stop',
     'pre-tool': '/api/hook/pre-tool',
-    notification: '/api/hook/authorization',  // 授权请求专用端点
+    'permission-request': '/api/hook/pre-tool', // 复用同一个服务器端点
+    notification: '/api/hook/authorization',
   };
 
   const endpoint = endpoints[hookType] || endpoints.notification;
 
-  // Pre-tool: blocking authorization flow
+  // Pre-tool: safe command filter only
   if (hookType === 'pre-tool') {
-    await handlePreTool(payload);
+    handlePreTool(payload);
+    return;
+  }
+
+  // Permission-request: blocking authorization flow via Feishu
+  if (hookType === 'permission-request') {
+    await handlePermissionRequest(payload);
     return;
   }
 
@@ -105,32 +149,71 @@ async function main() {
 }
 
 /**
- * Pre-tool authorization flow:
- * 1. Check if command is safe (skip auth)
- * 2. POST to /api/hook/pre-tool to create auth request
- * 3. If server returns immediate decision (rule match), output it
- * 4. Otherwise poll /api/hook/auth-poll until resolved or timeout
- * 5. Output hookSpecificOutput JSON to stdout
+ * PreToolUse handler:
+ * Only filters safe commands (auto-allow). For non-safe commands,
+ * exits without output → Claude Code proceeds to PermissionRequest.
  */
-async function handlePreTool(payload) {
-  // Check safe command whitelist
+function handlePreTool(payload) {
   const tool = payload.tool_name || payload.tool;
   const command = tool === 'Bash' ? payload.tool_input?.command : null;
+
   if (command && isSafeCommand(command)) {
-    console.error(`[notify] Safe command, skipping auth: ${command.substring(0, 60)}`);
-    // No stdout output → Claude Code processes normally
-    process.exit(0);
+    console.error(`[notify] Safe command, auto-allowing: ${command.substring(0, 60)}`);
+    // Output allow decision to skip permission prompt entirely
+    const output = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        permissionDecisionReason: '安全命令白名单',
+      },
+    };
+    process.stdout.write(JSON.stringify(output));
+    return;
   }
 
+  // Non-safe command: no output → Claude Code continues to PermissionRequest hook
+  console.error(`[notify] Non-safe command, deferring to PermissionRequest: ${(command || tool || '').substring(0, 60)}`);
+}
+
+/**
+ * PermissionRequest handler:
+ * Fires when Claude Code is about to show a permission prompt to the user.
+ * Receives permission_suggestions with the actual options.
+ *
+ * 1. Extract permission_suggestions → build options for Feishu card buttons
+ * 2. POST to server to create auth request with real options
+ * 3. Poll for Feishu card button click
+ * 4. Output PermissionRequest decision format to stdout
+ */
+async function handlePermissionRequest(payload) {
+  // Log the full permission_suggestions for debugging
+  console.error(`[notify] PermissionRequest debug:`, JSON.stringify({
+    permission_suggestions: payload.permission_suggestions,
+    tool_name: payload.tool_name || payload.tool,
+    hook_event_name: payload.hook_event_name,
+  }));
+
+  const tool = payload.tool_name || payload.tool;
+  const command = tool === 'Bash' ? payload.tool_input?.command : null;
+
+  // Build options from permission_suggestions
+  // permission_suggestions is an array like:
+  //   [{ type: "toolAlwaysAllow", tool: "Bash" }]
+  // We convert to human-readable options for the Feishu card
+  const options = buildOptionsFromSuggestions(payload.permission_suggestions);
+
+  // Add options to payload for the server
+  payload.options = options;
+
   try {
-    // Create auth request on server
+    // Create auth request on server (reuse /api/hook/pre-tool endpoint)
     const responseStr = await sendRequest(BRIDGE_URL + '/api/hook/pre-tool', payload);
     const response = JSON.parse(responseStr);
 
     // Server returned immediate decision (matched permission rule)
     if (response.decision) {
       console.error(`[notify] Immediate decision: ${response.decision} (${response.reason})`);
-      outputDecision(response.decision === 'allow', response.reason);
+      outputPermissionDecision(response.decision === 'allow', null, payload.permission_suggestions);
       return;
     }
 
@@ -144,12 +227,72 @@ async function handlePreTool(payload) {
 
     // Poll for decision
     const decision = await pollForDecision(requestId, POLL_TIMEOUT_MS);
-    outputDecision(decision.allow, decision.reason);
+    outputPermissionDecision(decision.allow, decision.reason, payload.permission_suggestions, decision.optionText);
   } catch (error) {
-    console.error(`[notify] Pre-tool error: ${error.message}`);
-    // Don't output hookSpecificOutput → Claude Code falls back to manual confirmation
+    console.error(`[notify] PermissionRequest error: ${error.message}`);
+    // No output → Claude Code falls back to manual terminal prompt
     process.exit(0);
   }
+}
+
+/**
+ * Convert permission_suggestions to human-readable option strings for Feishu card.
+ * Always includes 'Yes' and 'No', plus any "always allow" variants from suggestions.
+ */
+function buildOptionsFromSuggestions(suggestions) {
+  const options = ['Yes'];
+
+  if (Array.isArray(suggestions) && suggestions.length > 0) {
+    for (const s of suggestions) {
+      switch (s.type) {
+        case 'toolAlwaysAllow':
+          options.push("Yes, don't ask again");
+          break;
+        case 'pathAlwaysAllow':
+          options.push("Yes, don't ask again for this project");
+          break;
+        default:
+          // Unknown suggestion type → generic "always" option
+          options.push('Yes, always');
+          break;
+      }
+    }
+  }
+
+  options.push('No');
+  return options;
+}
+
+/**
+ * Output the PermissionRequest decision to stdout.
+ * Format differs from PreToolUse: uses decision.behavior + updatedPermissions.
+ */
+function outputPermissionDecision(allow, reason, suggestions, optionText) {
+  const decision = {
+    behavior: allow ? 'allow' : 'deny',
+  };
+
+  if (allow && optionText) {
+    const lowerOpt = optionText.toLowerCase();
+    const isAlways = lowerOpt.includes('always') || lowerOpt.includes("don't ask again");
+
+    // If user chose "always allow", apply the permission_suggestions as updatedPermissions
+    if (isAlways && Array.isArray(suggestions) && suggestions.length > 0) {
+      decision.updatedPermissions = suggestions;
+    }
+  }
+
+  if (!allow && reason) {
+    decision.message = reason;
+  }
+
+  const output = {
+    hookSpecificOutput: {
+      hookEventName: 'PermissionRequest',
+      decision,
+    },
+  };
+  process.stdout.write(JSON.stringify(output));
 }
 
 /**
@@ -169,6 +312,7 @@ async function pollForDecision(requestId, timeoutMs) {
         return {
           allow: response.decision === 'allow',
           reason: response.reason || '飞书远程授权',
+          optionText: response.reason || '',
         };
       }
 
@@ -176,6 +320,7 @@ async function pollForDecision(requestId, timeoutMs) {
         return {
           allow: false,
           reason: '授权请求已过期',
+          optionText: '',
         };
       }
 
@@ -192,21 +337,8 @@ async function pollForDecision(requestId, timeoutMs) {
   return {
     allow: false,
     reason: '授权超时',
+    optionText: '',
   };
-}
-
-/**
- * Output the permission decision to stdout for Claude Code to read
- */
-function outputDecision(allow, reason) {
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: allow ? 'allow' : 'deny',
-      permissionDecisionReason: reason || '飞书远程授权',
-    },
-  };
-  process.stdout.write(JSON.stringify(output));
 }
 
 function sleep(ms) {

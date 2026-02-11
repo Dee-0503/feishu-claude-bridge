@@ -33,6 +33,9 @@ const chatSessionMap = new Map<string, Array<{ sessionId: string; projectPath?: 
 /** 暂存的原始文本 (用于选择卡片场景) */
 const pendingTextMap = new Map<string, { text: string; createdAt: number }>();
 
+/** session_id → 根消息 ID（该 session 在飞书中的第一条消息，用于线程回复） */
+const sessionRootMap = new Map<string, string>();
+
 /**
  * 初始化：从文件恢复映射
  */
@@ -61,7 +64,14 @@ export function initMessageSessionMap(): void {
         }
       }
 
-      console.log(`📂 Restored ${messageSessionMap.size} message-session mappings`);
+      // 恢复 session 根消息映射
+      if (data.sessionRoot) {
+        for (const [sessionId, messageId] of Object.entries(data.sessionRoot)) {
+          sessionRootMap.set(sessionId, messageId as string);
+        }
+      }
+
+      console.log(`📂 Restored ${messageSessionMap.size} message-session mappings, ${sessionRootMap.size} session roots`);
     }
   } catch (error) {
     console.error('Failed to restore message-session map:', error);
@@ -162,6 +172,24 @@ export function retrievePendingText(key: string): string | null {
 }
 
 /**
+ * 记录 session 的根消息 ID（只记录第一条）
+ * 后续同 session 的消息会作为回复发送到该根消息下
+ */
+export function setSessionRootMessage(sessionId: string, messageId: string): void {
+  if (!sessionRootMap.has(sessionId)) {
+    sessionRootMap.set(sessionId, messageId);
+    persistToDisk();
+  }
+}
+
+/**
+ * 获取 session 的根消息 ID
+ */
+export function getSessionRootMessage(sessionId: string): string | null {
+  return sessionRootMap.get(sessionId) || null;
+}
+
+/**
  * 更新 chat → session 映射
  */
 function updateChatSession(chatId: string, sessionId: string, projectPath?: string): void {
@@ -196,6 +224,7 @@ function persistToDisk(): void {
     const data = {
       messageSession: Object.fromEntries(messageSessionMap),
       chatSession: Object.fromEntries(chatSessionMap),
+      sessionRoot: Object.fromEntries(sessionRootMap),
     };
 
     fs.writeFileSync(MAP_FILE, JSON.stringify(data, null, 2));

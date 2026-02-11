@@ -6,12 +6,17 @@
  * 唯一 mock: 飞书 SDK client（不真正发送消息）
  * 所有其他组件（路由、authStore、permissionRules、hook脚本）都是真实的。
  *
+ * Hook 架构:
+ *  - PreToolUse: 安全命令白名单过滤，非安全命令不输出（让 Claude Code 继续到 PermissionRequest）
+ *  - PermissionRequest: 阻塞式授权流程，通过飞书卡片按钮获取决策
+ *
  * 验证:
- *  - 完整授权流程（allow / deny）
+ *  - 完整授权流程（allow / deny）通过 PermissionRequest hook
  *  - 动态标题包含项目/会话信息
  *  - "始终允许" 规则写入后自动放行
  *  - stop / notification 端点的动态标题
- *  - hook 脚本的 stdout/stderr 隔离
+ *  - PreToolUse 安全命令白名单自动通过
+ *  - PreToolUse 非安全命令退出不输出（交给 PermissionRequest）
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'child_process';
@@ -35,11 +40,18 @@ const feishuCreateMock = vi.fn().mockResolvedValue({
 });
 const feishuPatchMock = vi.fn().mockResolvedValue({ code: 0, msg: 'success' });
 
+const feishuReplyMock = vi.fn().mockResolvedValue({
+  code: 0,
+  msg: 'success',
+  data: { message_id: 'e2e-msg-id' },
+});
+
 vi.mock('../feishu/client.js', () => ({
   feishuClient: {
     im: {
       message: {
         create: (...args: any[]) => feishuCreateMock(...args),
+        reply: (...args: any[]) => feishuReplyMock(...args),
         patch: (...args: any[]) => feishuPatchMock(...args),
       },
       chat: {
@@ -188,25 +200,23 @@ function getPatchCardTitle(callIndex = 0): string {
 
 // ---------- Tests ----------
 
-describe('E2E: Hook Script → Server → Feishu Card → Poll', () => {
-  it('完整授权流程: hook脚本发起 → 服务器创建卡片 → 飞书按钮点击 → hook脚本收到 allow', async () => {
+describe('E2E: PermissionRequest → Server → Feishu Card → Poll', () => {
+  it('完整授权流程: permission-request 发起 → 服务器创建卡片 → 飞书按钮点击 → hook脚本收到 allow', async () => {
     const sessionId = 'e2e-session-abc1234';
     const cwd = '/home/user/my-project-worktrees/phase3';
 
-    // Start hook script (will poll in background)
-    const hookPromise = runNotify('pre-tool', {
+    // Start hook script with permission-request type (has permission_suggestions)
+    const hookPromise = runNotify('permission-request', {
       tool_name: 'Bash',
       tool_input: { command: 'git push origin main' },
       session_id: sessionId,
-      options: ['Yes', 'Yes, always', 'No'],
+      permission_suggestions: [{ type: 'toolAlwaysAllow', tool: 'Bash' }],
       cwd,
     });
 
     // Wait for the server to receive the request and create the auth entry
     await new Promise((r) => setTimeout(r, 500));
 
-    // Find the requestId from the auth-poll (the hook script should be polling by now)
-    // We get the requestId from the Feishu card create call's button value
     expect(feishuCreateMock).toHaveBeenCalled();
 
     // Verify dynamic title includes [phase3] and session short code
@@ -222,17 +232,20 @@ describe('E2E: Hook Script → Server → Feishu Card → Poll', () => {
     const requestId = buttonValue.requestId;
     expect(requestId).toBeDefined();
 
+    // Verify 3 buttons: Yes, "始终允许" (from toolAlwaysAllow), No
+    expect(actionElement.actions.length).toBe(3);
+
     // Simulate user clicking "Yes" on the Feishu card
     await clickButton(requestId, 'Yes', sessionId);
 
     // Wait for hook script to receive the decision via polling
     const result = await hookPromise;
 
-    // Hook script should output allow decision on stdout
+    // Hook script should output PermissionRequest decision on stdout
     expect(result.stdout).not.toBe('');
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-    expect(parsed.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PermissionRequest');
+    expect(parsed.hookSpecificOutput.decision.behavior).toBe('allow');
 
     // stderr should have logs but no JSON
     expect(result.stderr).toContain('[notify]');
@@ -250,11 +263,11 @@ describe('E2E: Hook Script → Server → Feishu Card → Poll', () => {
     const sessionId = 'deny-session-xyz9999';
     const cwd = '/workspace/my-app';
 
-    const hookPromise = runNotify('pre-tool', {
+    const hookPromise = runNotify('permission-request', {
       tool_name: 'Bash',
       tool_input: { command: 'rm -rf /important' },
       session_id: sessionId,
-      options: ['Yes', 'No'],
+      permission_suggestions: [],
       cwd,
     });
 
@@ -272,7 +285,8 @@ describe('E2E: Hook Script → Server → Feishu Card → Poll', () => {
     const result = await hookPromise;
 
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PermissionRequest');
+    expect(parsed.hookSpecificOutput.decision.behavior).toBe('deny');
 
     // Verify rejected card title
     const patchTitle = getPatchCardTitle();
@@ -285,11 +299,11 @@ describe('E2E: Hook Script → Server → Feishu Card → Poll', () => {
     const cwd = '/projects/backend';
 
     // First request: user clicks "Yes, always"
-    const hook1 = runNotify('pre-tool', {
+    const hook1 = runNotify('permission-request', {
       tool_name: 'Bash',
       tool_input: { command: 'docker push myimage' },
       session_id: sessionId,
-      options: ['Yes', 'Yes, always', 'No'],
+      permission_suggestions: [{ type: 'toolAlwaysAllow', tool: 'Bash' }],
       cwd,
     });
 
@@ -300,25 +314,24 @@ describe('E2E: Hook Script → Server → Feishu Card → Poll', () => {
     const buttonValue = JSON.parse(actionElement.actions[0].value);
     const requestId = buttonValue.requestId;
 
-    await clickButton(requestId, 'Yes, always', sessionId);
+    await clickButton(requestId, "Yes, don't ask again", sessionId);
 
     const result1 = await hook1;
     const parsed1 = JSON.parse(result1.stdout);
-    expect(parsed1.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(parsed1.hookSpecificOutput.decision.behavior).toBe('allow');
 
     // Second request: same command pattern should be auto-allowed (no polling needed)
-    const result2 = await runNotify('pre-tool', {
+    const result2 = await runNotify('permission-request', {
       tool_name: 'Bash',
       tool_input: { command: 'docker push another-image' },
       session_id: 'second-session-7654321',
-      options: ['Yes', 'No'],
+      permission_suggestions: [],
       cwd,
     });
 
     // Should get immediate allow (no card created for second request)
     const parsed2 = JSON.parse(result2.stdout);
-    expect(parsed2.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(parsed2.hookSpecificOutput.permissionDecisionReason).toContain('规则');
+    expect(parsed2.hookSpecificOutput.decision.behavior).toBe('allow');
   });
 });
 
@@ -367,16 +380,16 @@ describe('E2E: Notification 端点动态标题', () => {
   });
 });
 
-describe('E2E: 非 Bash 工具授权', () => {
+describe('E2E: 非 Bash 工具授权 (PermissionRequest)', () => {
   it('Edit 工具授权流程应正常工作', async () => {
     const sessionId = 'edit-session-abcdef0';
     const cwd = '/workspace/frontend';
 
-    const hookPromise = runNotify('pre-tool', {
+    const hookPromise = runNotify('permission-request', {
       tool_name: 'Edit',
       tool_input: { file_path: '/etc/hosts', old_string: 'localhost', new_string: '0.0.0.0' },
       session_id: sessionId,
-      options: ['Yes', 'No'],
+      permission_suggestions: [],
       cwd,
     });
 
@@ -396,25 +409,44 @@ describe('E2E: 非 Bash 工具授权', () => {
 
     const result = await hookPromise;
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PermissionRequest');
+    expect(parsed.hookSpecificOutput.decision.behavior).toBe('allow');
   });
 });
 
-describe('E2E: 安全命令白名单（不经过服务器）', () => {
-  it('安全命令应直接通过，不创建飞书卡片', async () => {
+describe('E2E: PreToolUse 安全命令白名单', () => {
+  it('安全命令应直接通过，输出 allow 决策', async () => {
     const result = await runNotify('pre-tool', {
       tool_name: 'Bash',
       tool_input: { command: 'git status' },
       session_id: 'safe-session',
-      options: ['Yes', 'No'],
       cwd: '/workspace/project',
     });
 
-    // Should exit silently
-    expect(result.stdout).toBe('');
+    // Should output allow decision
+    expect(result.stdout).not.toBe('');
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    expect(parsed.hookSpecificOutput.permissionDecision).toBe('allow');
     expect(result.exitCode).toBe(0);
 
     // No Feishu card should have been created
+    expect(feishuCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('非安全命令应退出不输出，交给 PermissionRequest', async () => {
+    const result = await runNotify('pre-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'git push origin main' },
+      session_id: 'unsafe-session',
+      cwd: '/workspace/project',
+    });
+
+    // Should exit without stdout output (no decision)
+    expect(result.stdout).toBe('');
+    expect(result.exitCode).toBe(0);
+
+    // No Feishu card should have been created (deferred to PermissionRequest)
     expect(feishuCreateMock).not.toHaveBeenCalled();
   });
 });

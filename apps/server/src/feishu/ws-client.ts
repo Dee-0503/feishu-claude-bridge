@@ -66,8 +66,16 @@ export async function startWSClient(): Promise<void> {
       const cardJson = await handleCardAction(data, { mode: 'websocket' });
 
       if (cardJson) {
-        // 重要：必须包装在 { card: ... } 中
-        const response = { card: cardJson };
+        // 非模板卡片的响应式更新：需要 type:"raw" + data.card 包装
+        // 否则飞书会把 config/header/elements 当模板变量解析，报 200672
+        const response = {
+          card: {
+            type: 'raw',
+            data: {
+              card: cardJson,
+            },
+          },
+        };
 
         log('info', 'ws_card_action_response', {
           openMessageId: data.context?.open_message_id,

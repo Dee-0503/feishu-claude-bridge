@@ -1,13 +1,15 @@
 import path from 'path';
+import fs from 'fs';
 import { execSync } from 'child_process';
 import { Router } from 'express';
 import { sendTextMessage, sendCardMessage, updateCardMessage, type SendMessageOptions, type SendCardResult } from '../feishu/message.js';
 import { getOrCreateProjectGroup } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
-import { registerMessageSession } from '../services/message-session-map.js';
+import { generateCommandExplanation } from '../services/command-explain.js';
+import { registerMessageSession, getSessionRootMessage, setSessionRootMessage } from '../services/message-session-map.js';
 import { alertScheduler } from '../services/voice-alert.js';
 import { log } from '../utils/log.js';
-import type { RawSummary, StopHookPayload } from '../types/summary.js';
+import type { RawSummary, StopHookPayload, ToolStats } from '../types/summary.js';
 import { authStore } from '../store/auth-store.js';
 import { permissionRules } from '../store/permission-rules.js';
 
@@ -84,7 +86,9 @@ hookRouter.use((req, res, next) => {
 hookRouter.post('/stop', async (req, res) => {
   try {
     const body = req.body as StopHookPayload;
+    console.log('[DEBUG] Stop hook full body:', JSON.stringify(body, null, 2));
     const { session_id, summary, stop_reason, cwd, project_dir, message } = body;
+
     const projectRoot = project_dir || cwd || summary?.projectPath;
 
     console.log('📨 Stop hook received:', {
@@ -108,6 +112,9 @@ hookRouter.post('/stop', async (req, res) => {
     const tag = buildTitleTag(projectRoot, session_id);
     const title = tag ? `✅ ${tag} 任务完成` : '✅ Claude Code 任务完成';
 
+    // 查找该 session 的根消息 ID（用于线程回复）
+    const rootMessageId = session_id ? getSessionRootMessage(session_id) : null;
+
     // 发送初始卡片（不含 Haiku 摘要）
     const result = await sendCardMessage({
       type: 'task_complete',
@@ -115,11 +122,13 @@ hookRouter.post('/stop', async (req, res) => {
       sessionId: session_id,
       chatId,
       summary: summary || undefined,
+      replyToMessageId: rootMessageId || undefined,
     });
 
-    // 注册 message → session 映射
+    // 注册 message → session 映射 + 记录根消息
     if (result?.messageId && session_id) {
       registerMessageSession(result.messageId, session_id, result.chatId, summary?.projectPath);
+      setSessionRootMessage(session_id, result.messageId);
     }
 
     // Phase4: 安排任务完成超时提醒（向群发送，与其他phase一致）
@@ -136,6 +145,18 @@ hookRouter.post('/stop', async (req, res) => {
     // 异步生成 Haiku 摘要并更新卡片
     if (result?.messageId && summary) {
       generateHaikuSummaryAndUpdate(result.messageId, summary, session_id, chatId, projectRoot);
+    } else if (result?.messageId && body.transcript_path) {
+      // Claude Code Stop事件不直接提供summary，但提供transcript_path
+      // 从transcript文件提取摘要数据
+      extractSummaryFromTranscript(body.transcript_path, projectRoot)
+        .then((extractedSummary) => {
+          if (extractedSummary) {
+            generateHaikuSummaryAndUpdate(result.messageId, extractedSummary, session_id, chatId, projectRoot);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to extract summary from transcript:', err);
+        });
     }
 
     res.json({ success: true });
@@ -173,6 +194,122 @@ async function generateHaikuSummaryAndUpdate(
     }
   } catch (error) {
     console.error('Failed to generate/update Haiku summary:', error);
+  }
+}
+
+/**
+ * 从 Claude Code transcript 文件提取摘要数据
+ * transcript 是 JSONL 格式，每行一个JSON对象
+ */
+async function extractSummaryFromTranscript(
+  transcriptPath: string,
+  projectRoot?: string,
+): Promise<RawSummary | null> {
+  try {
+    if (!fs.existsSync(transcriptPath)) {
+      console.log('[transcript] File not found:', transcriptPath);
+      return null;
+    }
+
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+
+    if (lines.length === 0) return null;
+
+    // 解析所有行
+    const entries: any[] = [];
+    for (const line of lines) {
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    // 提取用户的第一条消息作为任务描述
+    const firstUserMsg = entries.find(e => e.type === 'human' || e.role === 'user');
+    let taskDescription = '';
+    if (firstUserMsg) {
+      const msgContent = firstUserMsg.content || firstUserMsg.message?.content || '';
+      if (typeof msgContent === 'string') {
+        taskDescription = msgContent.substring(0, 200);
+      } else if (Array.isArray(msgContent)) {
+        const textPart = msgContent.find((p: any) => p.type === 'text');
+        taskDescription = textPart?.text?.substring(0, 200) || '';
+      }
+    }
+
+    // 提取最后一条助手消息作为完成消息
+    const lastAssistantMsg = [...entries].reverse().find(e => e.type === 'assistant' || e.role === 'assistant');
+    let completionMessage = '';
+    if (lastAssistantMsg) {
+      const msgContent = lastAssistantMsg.content || lastAssistantMsg.message?.content || '';
+      if (typeof msgContent === 'string') {
+        completionMessage = msgContent.substring(0, 200);
+      } else if (Array.isArray(msgContent)) {
+        const textParts = msgContent.filter((p: any) => p.type === 'text');
+        completionMessage = textParts.map((p: any) => p.text).join(' ').substring(0, 200);
+      }
+    }
+
+    // 统计工具使用
+    const toolStats: ToolStats = { bash: 0, edit: 0, write: 0, read: 0, glob: 0, grep: 0, task: 0 };
+    const filesModified = new Set<string>();
+    const filesCreated = new Set<string>();
+
+    for (const entry of entries) {
+      const content = entry.content || entry.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === 'tool_use') {
+          const name = (block.name || '').toLowerCase();
+          if (name in toolStats) {
+            toolStats[name as keyof ToolStats]++;
+          }
+          // 跟踪文件修改
+          const input = block.input || {};
+          if (name === 'edit' && input.file_path) filesModified.add(input.file_path);
+          if (name === 'write' && input.file_path) filesCreated.add(input.file_path);
+        }
+      }
+    }
+
+    // 计算持续时间
+    const firstEntry = entries[0];
+    const lastEntry = entries[entries.length - 1];
+    const startTime = firstEntry?.timestamp ? new Date(firstEntry.timestamp).getTime() : Date.now();
+    const endTime = lastEntry?.timestamp ? new Date(lastEntry.timestamp).getTime() : Date.now();
+    const duration = Math.round((endTime - startTime) / 1000);
+
+    const sessionId = path.basename(transcriptPath, '.jsonl');
+
+    const summary: RawSummary = {
+      projectPath: projectRoot || '',
+      projectName: projectRoot ? path.basename(projectRoot) : '',
+      gitBranch: '',
+      sessionId,
+      sessionShortId: sessionId.substring(0, 8),
+      taskDescription,
+      completionMessage,
+      toolStats,
+      filesModified: [...filesModified],
+      filesCreated: [...filesCreated],
+      duration,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log('[transcript] Extracted summary:', {
+      taskDescription: taskDescription.substring(0, 50),
+      toolUses: Object.entries(toolStats).filter(([_, v]) => v > 0).map(([k, v]) => `${k}:${v}`).join(', '),
+      filesModified: filesModified.size,
+      filesCreated: filesCreated.size,
+      duration,
+    });
+
+    return summary;
+  } catch (error) {
+    console.error('[transcript] Failed to extract summary:', error);
+    return null;
   }
 }
 
@@ -235,6 +372,26 @@ hookRouter.post('/pre-tool', async (req, res) => {
     const tag = buildTitleTag(cwd, session_id);
     const authTitle = tag ? `🔔 ${tag} 需要授权` : '🔔 Claude 需要授权';
 
+    // AI command explanation (best-effort with timeout, don't block response if it fails)
+    let commandSummary: string | undefined;
+    let optionExplanations: import('../services/command-explain.js').OptionExplanation[] | undefined;
+    try {
+      const explainTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000));
+      const explanation = await Promise.race([
+        generateCommandExplanation(toolName, command || '', resolvedOptions, cwd),
+        explainTimeout,
+      ]);
+      if (explanation) {
+        commandSummary = explanation.summary;
+        optionExplanations = explanation.options;
+      }
+    } catch (error) {
+      log('warn', 'command_explain_failed', { error: String(error) });
+    }
+
+    // 查找该 session 的根消息 ID（用于线程回复）
+    const rootMessageId = session_id ? getSessionRootMessage(session_id) : null;
+
     // Send Feishu authorization card
     const result = await sendWithRetry({
       type: 'authorization_required',
@@ -245,6 +402,9 @@ hookRouter.post('/pre-tool', async (req, res) => {
       options: resolvedOptions,
       chatId,
       requestId: authRequest.requestId,
+      commandSummary,
+      optionExplanations,
+      replyToMessageId: rootMessageId || undefined,
     }, projectRoot);
 
     // Store feishu message ID for later card update
@@ -253,9 +413,10 @@ hookRouter.post('/pre-tool', async (req, res) => {
       authRequest.chatId = result.chatId;
     }
 
-    // 注册 message → session 映射
+    // 注册 message → session 映射 + 记录根消息
     if (result?.messageId && session_id) {
       registerMessageSession(result.messageId, session_id, result.chatId, cwd);
+      setSessionRootMessage(session_id, result.messageId);
     }
 
     // Phase4: 安排授权请求超时提醒
@@ -375,17 +536,22 @@ hookRouter.post('/authorization', async (req, res) => {
       }
     }
 
+    // 查找该 session 的根消息 ID（用于线程回复）
+    const rootMessageId = sessionId ? getSessionRootMessage(sessionId) : null;
+
     const result = await sendCardMessage({
       type: 'authorization_required',
       title,
       content: message || '请在终端中确认操作',
       sessionId,
       chatId,
+      replyToMessageId: rootMessageId || undefined,
     });
 
-    // 注册 message → session 映射
+    // 注册 message → session 映射 + 记录根消息
     if (result?.messageId && sessionId) {
       registerMessageSession(result.messageId, sessionId, result.chatId, cwd);
+      setSessionRootMessage(sessionId, result.messageId);
     }
 
     // Phase4: 安排授权请求超时提醒

@@ -11,11 +11,13 @@ vi.mock('child_process', () => ({
 
 // Mock feishu client
 const mockCreate = vi.fn().mockResolvedValue({ code: 0, msg: 'success', data: { message_id: 'mock-msg-id' } });
+const mockReply = vi.fn().mockResolvedValue({ code: 0, msg: 'success', data: { message_id: 'mock-msg-id' } });
 vi.mock('../feishu/client.js', () => ({
   feishuClient: {
     im: {
       message: {
         create: (...args: any[]) => mockCreate(...args),
+        reply: (...args: any[]) => mockReply(...args),
         patch: vi.fn().mockResolvedValue({ code: 0, msg: 'success' }),
       },
       chat: {

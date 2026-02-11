@@ -39,6 +39,8 @@ export interface SendMessageOptions {
   haikuSummary?: string;
   /** 会话选择按钮（用于 session_choice 类型） - Phase2 */
   sessionButtons?: SessionButton[];
+  /** 回复目标消息 ID，如果提供则使用 im.message.reply 实现线程回复 */
+  replyToMessageId?: string;
 }
 
 export interface SendCardResult {
@@ -100,16 +102,31 @@ export async function sendCardMessage(options: SendMessageOptions): Promise<Send
   const card = buildCard(options);
 
   try {
-    const response = await feishuClient.im.message.create({
-      params: {
-        receive_id_type: targetType as 'open_id' | 'chat_id' | 'user_id',
-      },
-      data: {
-        receive_id: targetId,
-        msg_type: 'interactive',
-        content: JSON.stringify(card),
-      },
-    });
+    let response: any;
+
+    if (options.replyToMessageId) {
+      // 使用 reply API 回复消息，形成线程
+      response = await feishuClient.im.message.reply({
+        path: { message_id: options.replyToMessageId },
+        data: {
+          content: JSON.stringify(card),
+          msg_type: 'interactive',
+          reply_in_thread: false,
+        },
+      });
+    } else {
+      // 原有逻辑：使用 create API 发送新消息
+      response = await feishuClient.im.message.create({
+        params: {
+          receive_id_type: targetType as 'open_id' | 'chat_id' | 'user_id',
+        },
+        data: {
+          receive_id: targetId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        },
+      });
+    }
 
     console.log('[DEBUG] Feishu API response:', JSON.stringify(response, null, 2));
 
@@ -118,10 +135,49 @@ export async function sendCardMessage(options: SendMessageOptions): Promise<Send
     }
 
     const messageId = response.data?.message_id || '';
-    log('info', 'card_message_sent', { title: options.title, messageId, chatId: targetId });
+    log('info', 'card_message_sent', {
+      title: options.title,
+      messageId,
+      chatId: targetId,
+      isReply: !!options.replyToMessageId,
+    });
 
     return { messageId, chatId: targetId };
   } catch (error) {
+    // 如果是 reply 失败，降级到 create 发送
+    if (options.replyToMessageId) {
+      log('warn', 'reply_failed_fallback_to_create', {
+        replyTo: options.replyToMessageId,
+        error: String(error),
+      });
+      try {
+        const fallbackResponse = await feishuClient.im.message.create({
+          params: {
+            receive_id_type: targetType as 'open_id' | 'chat_id' | 'user_id',
+          },
+          data: {
+            receive_id: targetId,
+            msg_type: 'interactive',
+            content: JSON.stringify(card),
+          },
+        });
+
+        if (fallbackResponse.code !== 0) {
+          throw new Error(`Feishu API error ${fallbackResponse.code}: ${fallbackResponse.msg}`);
+        }
+
+        const messageId = fallbackResponse.data?.message_id || '';
+        log('info', 'card_message_sent_fallback', { title: options.title, messageId, chatId: targetId });
+        return { messageId, chatId: targetId };
+      } catch (fallbackError) {
+        if (targetType === 'chat_id' && options.chatId) {
+          markChatInvalid(options.chatId);
+        }
+        log('error', 'feishu_card_send_failed', { title: options.title, error: String(fallbackError) });
+        throw fallbackError;
+      }
+    }
+
     if (targetType === 'chat_id' && options.chatId) {
       markChatInvalid(options.chatId);
     }
@@ -277,14 +333,11 @@ export function buildCard(options: SendMessageOptions): object {
     });
   }
 
-  // Command info
+  // Command info — use markdown tag for better code block rendering
   if (command) {
     elements.push({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: `**命令**: \`${command}\``,
-      },
+      tag: 'markdown',
+      content: `**命令**:\n\`\`\`\n${command}\n\`\`\``,
     });
   }
 

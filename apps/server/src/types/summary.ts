@@ -70,12 +70,17 @@ export const AUTH_OPTION_MAP: Record<string, string> = {
   'yes': '允许',
   'no': '拒绝',
   'yes, always': '始终允许',
-  'yes, don\'t ask again for this project': '本项目始终允许',
-  'yes, don\'t ask again': '始终允许',
+  'yes, and don\'t ask again': '始终允许',
+  'yes, and don\'t ask again for this session': '本会话始终允许',
+  'yes, and don\'t ask again for this project': '本项目始终允许',
+  "yes, don't ask again for this project": '本项目始终允许',
+  "yes, don't ask again": '始终允许',
+  'yes, always allow': '始终允许',
   'allow': '允许',
   'deny': '拒绝',
   'allow once': '仅本次允许',
   'allow for this session': '本会话允许',
+  'allow always': '始终允许',
 };
 
 /** 获取中文授权选项 */

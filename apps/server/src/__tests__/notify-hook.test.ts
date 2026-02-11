@@ -2,6 +2,10 @@
  * Hook 脚本 (notify.js) 测试
  * 测试: stdout/stderr 隔离、安全命令白名单、轮询逻辑、超时、服务不可达
  *
+ * Hook 架构:
+ *  - PreToolUse (pre-tool): 安全命令白名单 → 输出 allow；非安全命令 → 无输出退出
+ *  - PermissionRequest (permission-request): 阻塞式授权 → poll → 输出 decision
+ *
  * 使用 child_process.spawn 运行 notify.js, 验证 stdout/stderr 输出
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -50,8 +54,8 @@ function runNotify(
   });
 }
 
-describe('Hook Script: Safe Command Whitelist', () => {
-  it('should exit silently for safe commands (no stdout output)', async () => {
+describe('Hook Script: PreToolUse Safe Command Whitelist', () => {
+  it('should output allow for safe commands', async () => {
     const safeCommands = [
       'ls -la',
       'cat file.txt',
@@ -72,17 +76,20 @@ describe('Hook Script: Safe Command Whitelist', () => {
         tool: 'Bash',
         tool_input: { command: cmd },
         session_id: 'test',
-        options: ['Yes', 'No'],
       }), {
         FEISHU_BRIDGE_URL: 'http://localhost:99999', // unreachable, shouldn't matter
       });
 
-      expect(result.stdout).toBe('');
+      // Safe commands output allow decision
+      expect(result.stdout).not.toBe('');
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+      expect(parsed.hookSpecificOutput.permissionDecision).toBe('allow');
       expect(result.exitCode).toBe(0);
     }
   });
 
-  it('should NOT skip auth for dangerous commands', async () => {
+  it('should NOT output anything for dangerous commands (defers to PermissionRequest)', async () => {
     const dangerousCommands = [
       'git push origin main',
       'rm -rf /tmp/important',
@@ -95,18 +102,19 @@ describe('Hook Script: Safe Command Whitelist', () => {
         tool: 'Bash',
         tool_input: { command: cmd },
         session_id: 'test',
-        options: ['Yes', 'No'],
       }), {
-        FEISHU_BRIDGE_URL: 'http://localhost:99999', // will fail, that's fine
+        FEISHU_BRIDGE_URL: 'http://localhost:99999', // unreachable
       });
 
-      // Should NOT exit silently - it should try to contact the server and fail
+      // Non-safe commands exit without stdout (defer to PermissionRequest)
+      expect(result.stdout).toBe('');
+      expect(result.exitCode).toBe(0);
       expect(result.stderr).toContain('[notify]');
     }
   });
 });
 
-describe('Hook Script: stdout/stderr isolation', () => {
+describe('Hook Script: PermissionRequest stdout/stderr isolation', () => {
   it('should only output JSON to stdout, logs to stderr', async () => {
     // Start a minimal mock server that returns an immediate decision
     const mockApp = express();
@@ -122,11 +130,11 @@ describe('Hook Script: stdout/stderr isolation', () => {
     const port = typeof addr !== 'string' ? addr!.port : 0;
 
     try {
-      const result = await runNotify(['pre-tool'], JSON.stringify({
+      const result = await runNotify(['permission-request'], JSON.stringify({
         tool: 'Bash',
         tool_input: { command: 'git push' },
         session_id: 'test',
-        options: ['Yes', 'No'],
+        permission_suggestions: [],
       }), {
         FEISHU_BRIDGE_URL: `http://localhost:${port}`,
       });
@@ -135,8 +143,8 @@ describe('Hook Script: stdout/stderr isolation', () => {
       expect(result.stdout).not.toBe('');
       const parsed = JSON.parse(result.stdout);
       expect(parsed.hookSpecificOutput).toBeDefined();
-      expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-      expect(parsed.hookSpecificOutput.permissionDecision).toBe('allow');
+      expect(parsed.hookSpecificOutput.hookEventName).toBe('PermissionRequest');
+      expect(parsed.hookSpecificOutput.decision.behavior).toBe('allow');
 
       // stderr should have log messages but no JSON output that could confuse Claude
       expect(result.stderr).toContain('[notify]');
@@ -160,30 +168,30 @@ describe('Hook Script: stdout/stderr isolation', () => {
     const port = typeof addr !== 'string' ? addr!.port : 0;
 
     try {
-      const result = await runNotify(['pre-tool'], JSON.stringify({
+      const result = await runNotify(['permission-request'], JSON.stringify({
         tool: 'Bash',
         tool_input: { command: 'git push' },
         session_id: 'test',
-        options: ['Yes', 'No'],
+        permission_suggestions: [],
       }), {
         FEISHU_BRIDGE_URL: `http://localhost:${port}`,
       });
 
       const parsed = JSON.parse(result.stdout);
-      expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput.decision.behavior).toBe('deny');
     } finally {
       await new Promise<void>((r) => mockServer.close(() => r()));
     }
   });
 });
 
-describe('Hook Script: Server unreachable', () => {
+describe('Hook Script: PermissionRequest server unreachable', () => {
   it('should exit cleanly without stdout output when server is down', async () => {
-    const result = await runNotify(['pre-tool'], JSON.stringify({
+    const result = await runNotify(['permission-request'], JSON.stringify({
       tool: 'Bash',
       tool_input: { command: 'git push' },
       session_id: 'test',
-      options: ['Yes', 'No'],
+      permission_suggestions: [],
     }), {
       FEISHU_BRIDGE_URL: 'http://localhost:99999',
     });
@@ -195,7 +203,7 @@ describe('Hook Script: Server unreachable', () => {
   });
 });
 
-describe('Hook Script: Polling flow', () => {
+describe('Hook Script: PermissionRequest polling flow', () => {
   it('should poll and receive resolved decision', async () => {
     let requestCount = 0;
     const mockApp = express();
@@ -219,11 +227,11 @@ describe('Hook Script: Polling flow', () => {
     const port = typeof addr !== 'string' ? addr!.port : 0;
 
     try {
-      const result = await runNotify(['pre-tool'], JSON.stringify({
+      const result = await runNotify(['permission-request'], JSON.stringify({
         tool: 'Bash',
         tool_input: { command: 'git push' },
         session_id: 'test',
-        options: ['Yes', 'No'],
+        permission_suggestions: [],
       }), {
         FEISHU_BRIDGE_URL: `http://localhost:${port}`,
         AUTH_POLL_INTERVAL_MS: '100', // Fast poll for testing
@@ -232,7 +240,7 @@ describe('Hook Script: Polling flow', () => {
 
       expect(requestCount).toBeGreaterThanOrEqual(2);
       const parsed = JSON.parse(result.stdout);
-      expect(parsed.hookSpecificOutput.permissionDecision).toBe('allow');
+      expect(parsed.hookSpecificOutput.decision.behavior).toBe('allow');
     } finally {
       await new Promise<void>((r) => mockServer.close(() => r()));
     }
@@ -255,11 +263,11 @@ describe('Hook Script: Polling flow', () => {
     const port = typeof addr !== 'string' ? addr!.port : 0;
 
     try {
-      const result = await runNotify(['pre-tool'], JSON.stringify({
+      const result = await runNotify(['permission-request'], JSON.stringify({
         tool: 'Bash',
         tool_input: { command: 'git push' },
         session_id: 'test',
-        options: ['Yes', 'No'],
+        permission_suggestions: [],
       }), {
         FEISHU_BRIDGE_URL: `http://localhost:${port}`,
         AUTH_POLL_INTERVAL_MS: '50',
@@ -267,8 +275,7 @@ describe('Hook Script: Polling flow', () => {
       }, 5000);
 
       const parsed = JSON.parse(result.stdout);
-      expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
-      expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('超时');
+      expect(parsed.hookSpecificOutput.decision.behavior).toBe('deny');
     } finally {
       await new Promise<void>((r) => mockServer.close(() => r()));
     }
@@ -291,19 +298,18 @@ describe('Hook Script: Polling flow', () => {
     const port = typeof addr !== 'string' ? addr!.port : 0;
 
     try {
-      const result = await runNotify(['pre-tool'], JSON.stringify({
+      const result = await runNotify(['permission-request'], JSON.stringify({
         tool: 'Bash',
         tool_input: { command: 'git push' },
         session_id: 'test',
-        options: ['Yes', 'No'],
+        permission_suggestions: [],
       }), {
         FEISHU_BRIDGE_URL: `http://localhost:${port}`,
         AUTH_POLL_INTERVAL_MS: '50',
       });
 
       const parsed = JSON.parse(result.stdout);
-      expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
-      expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('过期');
+      expect(parsed.hookSpecificOutput.decision.behavior).toBe('deny');
     } finally {
       await new Promise<void>((r) => mockServer.close(() => r()));
     }

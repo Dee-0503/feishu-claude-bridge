@@ -12,6 +12,7 @@ vi.mock('../feishu/client.js', () => ({
     im: {
       message: {
         create: (...args: unknown[]) => mockMessageCreate(...args),
+        reply: (...args: unknown[]) => mockMessageCreate(...args),
         patch: (...args: unknown[]) => mockMessagePatch(...args),
       },
     },

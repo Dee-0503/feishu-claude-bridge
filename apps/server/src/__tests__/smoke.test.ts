@@ -12,6 +12,7 @@ vi.mock('../feishu/client.js', () => ({
     im: {
       message: {
         create: vi.fn().mockResolvedValue({ code: 0, msg: 'success', data: { message_id: 'smoke-msg-id' } }),
+        reply: vi.fn().mockResolvedValue({ code: 0, msg: 'success', data: { message_id: 'smoke-msg-id' } }),
         patch: vi.fn().mockResolvedValue({ code: 0, msg: 'success' }),
       },
       chat: {

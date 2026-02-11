@@ -1,6 +1,10 @@
 /**
  * Shared event handlers for both HTTP webhook and WebSocket long connection modes.
  * These handlers process Feishu events (messages, card actions) regardless of transport.
+ *
+ * WebSocket 卡片更新策略：响应式更新 + API 更新双重保险
+ * - 响应式更新（return cardJson）→ 即时反馈给用户
+ * - API 更新（updateCardMessage）→ 持久化卡片状态，刷新后不回退
  */
 
 import { authStore } from '../store/auth-store.js';
@@ -75,12 +79,25 @@ export async function handleMessage(event: any): Promise<void> {
 }
 
 /**
+ * 异步调用 API 更新卡片（不阻塞响应式返回，不抛错）
+ */
+function asyncApiUpdate(messageId: string | undefined, cardOptions: any, context: string): void {
+  if (!messageId) return;
+  updateCardMessage(messageId, cardOptions).catch(err => {
+    log('error', 'card_api_update_failed', { context, messageId, error: String(err) });
+  });
+}
+
+/**
  * Handle card action events (e.g., authorization button clicks).
  * Processes user decisions and updates permission rules accordingly.
  *
+ * WebSocket 模式：返回卡片 JSON 做响应式更新 + 异步 API 更新持久化
+ * HTTP 模式：通过 API 更新卡片（响应已发送，无法通过响应更新）
+ *
  * @param event - The card action event from Feishu
  * @param options - Optional configuration, including mode ('http' | 'websocket')
- * @returns The updated card JSON for responsive updates (both HTTP and WebSocket modes)
+ * @returns The updated card JSON for responsive updates (WebSocket mode), or null (HTTP mode)
  */
 export async function handleCardAction(
   event: any,
@@ -142,23 +159,18 @@ export async function handleCardAction(
     chatId: event.context?.open_chat_id,
   });
 
+  // ── 错误分支：缺少 requestId ──
   if (!requestId) {
     log('warn', 'card_action_missing_request_id', { value });
 
-    // Build error card
-    const messageId = event.context?.open_message_id;
-    if (messageId) {
+    const errorMsgId = event.context?.open_message_id;
+    if (errorMsgId) {
       const errorContent = [
         '**错误**: 按钮 value 中缺少 requestId',
         '',
-        '**接收到的数据**:',
-        '```json',
-        JSON.stringify(value, null, 2),
-        '```',
+        `**接收到的数据**: ${JSON.stringify(value)}`,
         '',
-        '**调试提示**:',
-        '- 检查卡片构建时是否正确设置了 requestId',
-        '- 查看服务器日志中的 card_action_value_parsed 事件',
+        '**调试提示**: 检查卡片构建时是否正确设置了 requestId',
       ].join('\n');
 
       const errorCardOptions = {
@@ -168,63 +180,65 @@ export async function handleCardAction(
         chatId: event.context?.open_chat_id,
       };
 
-      // WebSocket 模式：主动调用 API 更新卡片
-      // HTTP 模式：返回卡片 JSON 进行响应式更新
-      const messageId = event.context?.open_message_id;
-      if (options?.mode === 'websocket' && messageId) {
-        log('info', 'card_response_using_api', { requestId: 'unknown', type: 'error', messageId });
-        await updateCardMessage(messageId, errorCardOptions);
-        return null;
-      } else {
-        log('info', 'card_response_built', { requestId: 'unknown', mode: options?.mode || 'unknown', type: 'error' });
+      if (options?.mode === 'websocket') {
+        // 双重更新：响应式 + 异步 API 持久化
+        log('info', 'card_response_websocket_error', { type: 'error', messageId: errorMsgId });
+        asyncApiUpdate(errorMsgId, errorCardOptions, 'websocket_error');
         return buildCard(errorCardOptions);
       }
 
+      // HTTP 模式：API 更新
+      log('info', 'card_response_api_error', { type: 'error', messageId: errorMsgId });
+      await updateCardMessage(errorMsgId, errorCardOptions);
+      return null;
     }
 
     return null;
   }
 
-  // 1. Find auth request
+  // ── 错误分支：authReq 不存在（服务器重启后内存清空） ──
   const authReq = authStore.get(requestId);
   if (!authReq) {
     log('warn', 'card_action_request_not_found', { requestId });
+
+    const expiredMsgId = event.context?.open_message_id;
+    const expiredCardOptions = {
+      type: 'authorization_resolved' as const,
+      title: '⏰ 授权请求已过期',
+      content: '该授权请求已过期或服务器已重启，请在终端中操作。',
+      sessionId,
+      chatId: event.context?.open_chat_id,
+    };
+
+    if (options?.mode === 'websocket') {
+      // 双重更新：响应式 + 异步 API 持久化
+      log('info', 'card_response_websocket_expired', { requestId, messageId: expiredMsgId });
+      asyncApiUpdate(expiredMsgId, expiredCardOptions, 'websocket_expired');
+      return buildCard(expiredCardOptions);
+    }
+
+    // HTTP 模式：API 更新
+    if (expiredMsgId) {
+      await updateCardMessage(expiredMsgId, expiredCardOptions);
+    }
     return null;
   }
 
-  // Already resolved (duplicate click) - need to maintain resolved state
+  // ── 幂等分支：已处理过的请求（重复点击） ──
   if (authReq.status !== 'pending') {
     log('info', 'card_action_already_resolved', { requestId, status: authReq.status });
 
-    // Build resolved card for consistency
     if (authReq.decision) {
       const tag = buildTitleTag(authReq.cwd, authReq.sessionId);
       const resolvedTitle = authReq.decision === 'allow'
         ? (tag ? `✅ ${tag} 已授权` : '✅ 已授权')
         : (tag ? `❌ ${tag} 已拒绝` : '❌ 已拒绝');
 
-      const callbackData = {
-        requestId,
-        action: authReq.decisionReason || optionText,
-        sessionId,
-        decision: authReq.decision,
-        timestamp: new Date(authReq.resolvedAt || Date.now()).toISOString(),
-        operator: event.operator?.user_id?.open_id || 'unknown',
-      };
-
       const detailedContent = [
         `**决策**: ${authReq.decision === 'allow' ? '✅ 允许' : '❌ 拒绝'}`,
         `**选项**: ${getChineseAuthOption(authReq.decisionReason || optionText || '')}`,
-        `**请求ID**: \`${requestId.substring(0, 16)}...\``,
-        `**会话ID**: \`${sessionId?.substring(0, 8) || 'N/A'}\``,
         `**操作时间**: ${new Date(authReq.resolvedAt || Date.now()).toLocaleString('zh-CN')}`,
-        '',
-        '**回调数据**:',
-        '```json',
-        JSON.stringify(callbackData, null, 2),
-        '```',
-        '',
-        '**服务器状态**: ✅ 已成功接收并处理 (幂等重发)',
+        `**服务器状态**: ✅ 已成功接收并处理 (幂等重发)`,
       ].join('\n');
 
       const cardOptions = {
@@ -238,27 +252,28 @@ export async function handleCardAction(
 
       const cardJson = buildCard(cardOptions);
 
-      // 所有模式都调用 API 更新卡片
+      if (options?.mode === 'websocket') {
+        // 双重更新：响应式 + 异步 API 持久化
+        log('info', 'card_response_websocket_duplicate', { requestId, messageId: authReq.feishuMessageId });
+        asyncApiUpdate(authReq.feishuMessageId, cardOptions, 'websocket_duplicate');
+        return cardJson;
+      }
+
+      // HTTP 模式：API 更新
       if (authReq.feishuMessageId) {
-        log('info', 'card_response_api_update_duplicate', { requestId, type: 'duplicate', messageId: authReq.feishuMessageId, mode: options?.mode || 'unknown' });
+        log('info', 'card_response_api_update_duplicate', { requestId, type: 'duplicate', messageId: authReq.feishuMessageId });
         updateCardMessage(authReq.feishuMessageId, cardOptions).catch(err => {
           log('error', 'card_api_update_failed', { requestId, error: String(err) });
         });
       }
 
-      // WebSocket 模式：额外返回卡片 JSON 用于响应式更新
-      if (options?.mode === 'websocket') {
-        return cardJson;
-      } else if (options?.mode === 'http') {
-        return null;
-      }
-
       return null;
-
     }
 
     return null;
   }
+
+  // ── 正常流程：处理新的授权决策 ──
 
   // 2. Determine allow or deny
   const isReject = optionText?.toLowerCase().includes('no')
@@ -293,29 +308,11 @@ export async function handleCardAction(
         ? (tag ? `✅ ${tag} 已授权` : '✅ 已授权')
         : (tag ? `❌ ${tag} 已拒绝` : '❌ 已拒绝');
 
-      // 构建详细的回调数据
-      const callbackData = {
-        requestId,
-        action: optionText,
-        sessionId,
-        decision,
-        timestamp: new Date().toISOString(),
-        operator: event.operator?.user_id?.open_id || 'unknown',
-      };
-
       const detailedContent = [
         `**决策**: ${decision === 'allow' ? '✅ 允许' : '❌ 拒绝'}`,
         `**选项**: ${getChineseAuthOption(optionText || '')}`,
-        `**请求ID**: \`${requestId.substring(0, 16)}...\``,
-        `**会话ID**: \`${sessionId?.substring(0, 8) || 'N/A'}\``,
         `**操作时间**: ${new Date().toLocaleString('zh-CN')}`,
-        '',
-        '**回调数据**:',
-        '```json',
-        JSON.stringify(callbackData, null, 2),
-        '```',
-        '',
-        '**服务器状态**: ✅ 已成功接收并处理',
+        `**服务器状态**: ✅ 已成功接收并处理`,
       ].join('\n');
 
       const cardOptions = {
@@ -329,22 +326,19 @@ export async function handleCardAction(
 
       const cardJson = buildCard(cardOptions);
 
-      // 所有模式都调用 API 更新卡片
+      if (options?.mode === 'websocket') {
+        // 双重更新：响应式即时反馈 + 异步 API 持久化
+        log('info', 'card_response_websocket', { requestId, messageId: authReq.feishuMessageId });
+        asyncApiUpdate(authReq.feishuMessageId, cardOptions, 'websocket_resolve');
+        return cardJson;
+      }
+
+      // HTTP 模式：使用 API 更新卡片
       if (authReq.feishuMessageId) {
         log('info', 'card_response_api_update', { requestId, messageId: authReq.feishuMessageId, mode: options?.mode || 'unknown' });
-
-        // API 更新（不等待，让它异步执行）
         updateCardMessage(authReq.feishuMessageId, cardOptions).catch(err => {
           log('error', 'card_api_update_failed', { requestId, error: String(err) });
         });
-      }
-
-      // WebSocket 模式：额外返回卡片 JSON 用于响应式更新（双重保险）
-      if (options?.mode === 'websocket') {
-        return cardJson;
-      } else if (options?.mode === 'http') {
-        // HTTP 模式：只需 API 更新即可，不需要返回 cardJson（因为响应已发送）
-        return null;
       }
 
       return null;

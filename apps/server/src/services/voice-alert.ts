@@ -58,15 +58,26 @@ export async function sendVoiceAlert(config: VoiceAlertConfig): Promise<void> {
  * 检测是否为高风险命令
  */
 export function isHighRiskCommand(command: string): boolean {
+  const trimmed = command.trim();
+
+  // 先检查高风险操作符（重定向到设备等）
+  if (/>.*\/dev\/sd/.test(trimmed)) {
+    return true; // echo "test" > /dev/sda 也是高风险
+  }
+
+  // 排除明显的显示/引用场景（但已经检查过重定向）
+  if (/^(echo|cat|printf|print)\s/.test(trimmed) && !/>/.test(trimmed)) {
+    return false;
+  }
+
   const highRiskPatterns = [
-    /rm\s+-rf/,                    // 递归删除
-    /git\s+push\s+.*--force/,      // 强制推送
-    /DROP\s+(TABLE|DATABASE)/i,    // SQL删除
-    /sudo\s+rm/,                   // sudo删除
-    /mkfs/,                        // 格式化磁盘
-    /> *\/dev\/sd/,                // 直接写磁盘
-    /rm\s+.*\/-rf/,                // rm with -rf anywhere
-    /shutdown|reboot/,             // 系统关机重启
+    /\brm\s+-rf\b/,                    // 递归删除
+    /\bgit\s+push\s+.*--force/,        // 强制推送
+    /\bDROP\s+(TABLE|DATABASE)\b/i,    // SQL删除
+    /\bsudo\s+rm\b/,                   // sudo删除
+    /\bmkfs\b/,                        // 格式化磁盘
+    /\bdd\s+if=.*of=\/dev/,            // dd直接写磁盘
+    /\bshutdown\b|\breboot\b/,         // 系统关机重启
   ];
 
   return highRiskPatterns.some(pattern => pattern.test(command));

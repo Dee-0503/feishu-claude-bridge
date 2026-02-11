@@ -1,14 +1,14 @@
 import path from 'path';
 import { execSync } from 'child_process';
 import { Router } from 'express';
-import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
+import { sendTextMessage, sendCardMessage, updateCardMessage, type SendMessageOptions, type SendCardResult } from '../feishu/message.js';
 import { getOrCreateProjectGroup, loadGroupMappings } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
 import { registerMessageSession } from '../services/message-session-map.js';
 import type { RawSummary, StopHookPayload } from '../types/summary.js';
-import { isHighRiskCommand, sendVoiceAlert } from '../services/voice-alert.js';
-import { authStore } from '../store/auth-store.js';
 import { log } from '../utils/log.js';
+import { authStore } from '../store/auth-store.js';
+import { isHighRiskCommand, sendVoiceAlert } from '../services/voice-alert.js';
 
 export const hookRouter = Router();
 
@@ -160,15 +160,15 @@ hookRouter.post('/pre-tool', async (req, res) => {
 
     // Phase4: 检测高风险命令并触发语音提醒
     if (command && isHighRiskCommand(command)) {
-      // 获取项目管理员配置（从project-groups.json）
       const adminUserId = await getAdminUserId(cwd);
       if (adminUserId && process.env.FEISHU_VOICE_ENABLED === 'true') {
+        // 异步发送语音提醒，不阻塞主流程
         sendVoiceAlert({
           userId: adminUserId,
           command: tool || 'unknown',
           projectPath: cwd || 'unknown',
           sessionId: session_id || 'unknown',
-        }).catch(err => console.error('Voice alert failed (non-blocking):', err));
+        }).catch(err => log('error', 'voice_alert_send_failed', { error: String(err) }));
       }
     }
 

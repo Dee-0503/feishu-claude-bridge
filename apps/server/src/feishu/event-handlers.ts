@@ -8,8 +8,13 @@ import { permissionRules } from '../store/permission-rules.js';
 import { updateCardMessage, buildCard } from './message.js';
 import { getChineseAuthOption } from '../types/auth.js';
 import { getNormalizedProjectPath } from './group.js';
-import { buildTitleTag } from '../routes/hook.js';
 import { log } from '../utils/log.js';
+
+// Phase3: Helper function to build title tag from tool name
+export function buildTitleTag(cwd: string | undefined, sessionId: string): string {
+  // 简化版本：返回session标识，忽略cwd的tool信息
+  return `#${sessionId.substring(0, 8)}`;
+}
 
 /**
  * Handle incoming message events from Feishu.

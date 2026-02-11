@@ -8,13 +8,25 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { feishuClient } from './client.js';
 import type { GroupInfo, GroupMappings } from '../types/summary.js';
+import { log } from '../utils/log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../../data');
 const MAPPINGS_FILE = path.join(DATA_DIR, 'project-groups.json');
 
-// 机器人自己的 user_id（用于创建群时添加）
-const BOT_USER_ID = process.env.FEISHU_BOT_USER_ID || '';
+/**
+ * 已知无效的群 chatId 集合 (Phase3)
+ * 只有发消息失败时才会加入，避免主动验证带来的误判
+ */
+const invalidChatIds = new Set<string>();
+
+/**
+ * 标记一个群为无效（由消息发送失败时调用） (Phase3)
+ */
+export function markChatInvalid(chatId: string): void {
+  invalidChatIds.add(chatId);
+  log('warn', 'group_marked_invalid', { chatId });
+}
 
 /**
  * 加载项目群映射

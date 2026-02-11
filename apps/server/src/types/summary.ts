@@ -41,6 +41,10 @@ export interface GroupInfo {
   projectName: string;
   projectPath: string;
   createdAt: string;
+  /** Phase4: 管理员用户ID（用于接收语音提醒） */
+  adminUserId?: string;
+  /** Phase4: 是否启用语音提醒 */
+  enableVoiceAlert?: boolean;
 }
 
 /** 项目群映射存储结构 */

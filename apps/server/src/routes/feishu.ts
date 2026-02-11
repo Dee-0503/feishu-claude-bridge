@@ -5,6 +5,7 @@ import { getProjectPathByChatId } from '../feishu/group.js';
 import { sendTextMessage } from '../feishu/message.js';
 import { getSessionByMessageId } from '../services/message-session-map.js';
 import { dispatch, handleSessionChoice } from '../services/session-manager.js';
+import { log } from '../utils/log.js';
 
 export const feishuRouter = Router();
 

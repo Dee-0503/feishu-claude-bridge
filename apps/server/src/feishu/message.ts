@@ -1,5 +1,6 @@
 import { feishuClient } from './client.js';
-import { getChineseAuthOption } from '../types/auth.js';
+import type { RawSummary } from '../types/summary.js';
+import { getChineseAuthOption } from '../types/summary.js';
 import type { OptionExplanation } from '../services/command-explain.js';
 import { markChatInvalid } from './group.js';
 import { log } from '../utils/log.js';
@@ -8,7 +9,14 @@ export type MessageType =
   | 'task_complete'
   | 'authorization_required'
   | 'sensitive_command'
-  | 'authorization_resolved';
+  | 'authorization_resolved'
+  | 'task_started'
+  | 'session_choice';
+
+interface SessionButton {
+  label: string;
+  value: string;
+}
 
 export interface SendMessageOptions {
   type: MessageType;
@@ -19,12 +27,18 @@ export interface SendMessageOptions {
   options?: string[];
   /** 动态指定群 ID，不传则使用环境变量 */
   chatId?: string;
-  /** 授权请求 ID（按钮 value 中携带） */
+  /** 授权请求 ID（按钮 value 中携带） - Phase3 */
   requestId?: string;
-  /** AI 生成的命令解释摘要 */
+  /** AI 生成的命令解释摘要 - Phase3 */
   commandSummary?: string;
-  /** AI 生成的每个选项的解释 */
+  /** AI 生成的每个选项的解释 - Phase3 */
   optionExplanations?: OptionExplanation[];
+  /** 任务摘要数据 - Phase2 */
+  summary?: RawSummary;
+  /** Haiku 生成的一句话摘要 - Phase2 */
+  haikuSummary?: string;
+  /** 会话选择按钮（用于 session_choice 类型） - Phase2 */
+  sessionButtons?: SessionButton[];
 }
 
 export interface SendCardResult {
@@ -161,8 +175,9 @@ export async function updateCardMessage(
 
 export function buildCard(options: SendMessageOptions): object {
   const {
-    type, title, content, sessionId, command,
-    options: authOptions, requestId, commandSummary, optionExplanations,
+    type, title, content, sessionId, command, options: authOptions,
+    requestId, commandSummary, optionExplanations,
+    summary, haikuSummary, sessionButtons,
   } = options;
 
   // Header color based on message type
@@ -171,11 +186,13 @@ export function buildCard(options: SendMessageOptions): object {
     authorization_required: 'orange',
     sensitive_command: 'red',
     authorization_resolved: 'grey',
+    task_started: 'blue',
+    session_choice: 'purple',
   };
 
   const elements: object[] = [];
 
-  // AI command summary (displayed prominently above the command)
+  // AI command summary (Phase3 - displayed prominently above the command)
   if (commandSummary) {
     elements.push({
       tag: 'div',
@@ -186,8 +203,69 @@ export function buildCard(options: SendMessageOptions): object {
     });
   }
 
-  // Content
-  if (content) {
+  // Phase2: Task summary (rich card with tool stats and files)
+  if (summary) {
+    // Haiku 生成的摘要（如果有）
+    if (haikuSummary) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**摘要**: ${haikuSummary}`,
+        },
+      });
+    }
+
+    // 操作统计
+    const stats = summary.toolStats;
+    const statsItems: string[] = [];
+    if (stats.edit > 0) statsItems.push(`编辑 ${stats.edit} 文件`);
+    if (stats.write > 0) statsItems.push(`创建 ${stats.write} 文件`);
+    if (stats.bash > 0) statsItems.push(`执行 ${stats.bash} 命令`);
+    if (stats.read > 0) statsItems.push(`读取 ${stats.read} 文件`);
+
+    if (statsItems.length > 0) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**操作**: ${statsItems.join(' | ')}`,
+        },
+      });
+    }
+
+    // 文件列表
+    const allFiles = [...summary.filesModified, ...summary.filesCreated];
+    if (allFiles.length > 0) {
+      const fileNames = allFiles
+        .slice(0, 5)
+        .map(f => `\`${f.split('/').pop()}\``)
+        .join(', ');
+      const extra = allFiles.length > 5 ? ` +${allFiles.length - 5} 更多` : '';
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**文件**: ${fileNames}${extra}`,
+        },
+      });
+    }
+
+    // 耗时
+    if (summary.duration > 0) {
+      const minutes = Math.floor(summary.duration / 60);
+      const seconds = summary.duration % 60;
+      const durationText = minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**耗时**: ${durationText}`,
+        },
+      });
+    }
+  } else if (content) {
+    // Simple content
     elements.push({
       tag: 'div',
       text: {
@@ -208,9 +286,9 @@ export function buildCard(options: SendMessageOptions): object {
     });
   }
 
-  // Authorization buttons with per-button explanations
+  // Authorization buttons (Phase3 with explanations + Phase2 basic)
   if (type !== 'authorization_resolved' && authOptions && authOptions.length > 0) {
-    // Build explanation map for quick lookup
+    // Build explanation map for quick lookup (Phase3)
     const explainMap = new Map<string, OptionExplanation>();
     if (optionExplanations) {
       for (const exp of optionExplanations) {
@@ -218,7 +296,6 @@ export function buildCard(options: SendMessageOptions): object {
       }
     }
 
-    // Render each option as: button row + hint note
     const actions = authOptions.map((opt, index) => {
       const chineseOpt = getChineseAuthOption(opt);
       const isReject = opt.toLowerCase().includes('no') || opt.toLowerCase().includes('deny');
@@ -235,7 +312,7 @@ export function buildCard(options: SendMessageOptions): object {
           chineseAction: chineseOpt,
           index,
           sessionId,
-          requestId,
+          requestId, // Phase3: include requestId for auth tracking
         }),
       };
     });
@@ -245,7 +322,7 @@ export function buildCard(options: SendMessageOptions): object {
       actions,
     });
 
-    // Per-button explanations as grey note text below buttons
+    // Per-button explanations as grey note text below buttons (Phase3)
     if (optionExplanations && optionExplanations.length > 0) {
       const hintLines = authOptions.map(opt => {
         const exp = explainMap.get(opt);
@@ -268,14 +345,37 @@ export function buildCard(options: SendMessageOptions): object {
     }
   }
 
+  // Session choice buttons (Phase2)
+  if (sessionButtons && sessionButtons.length > 0) {
+    const actions = sessionButtons.map((btn, index) => ({
+      tag: 'button',
+      text: {
+        tag: 'plain_text',
+        content: btn.label,
+      },
+      type: index === sessionButtons.length - 1 ? 'default' : (index === 0 ? 'primary' : 'default'),
+      value: btn.value,
+    }));
+
+    elements.push({
+      tag: 'action',
+      actions,
+    });
+  }
+
   // Separator
   if (elements.length > 0) {
     elements.push({ tag: 'hr' });
   }
 
-  // Session info as note
+  // Session/branch info as note
   const noteItems: string[] = [];
-  if (sessionId) {
+  if (summary?.gitBranch) {
+    noteItems.push(summary.gitBranch);
+  }
+  if (summary?.sessionShortId) {
+    noteItems.push(`#${summary.sessionShortId}`);
+  } else if (sessionId) {
     noteItems.push(`#${sessionId.substring(0, 8)}`);
   }
 
@@ -291,15 +391,25 @@ export function buildCard(options: SendMessageOptions): object {
     });
   }
 
+  // Build header title (Phase2: rich header for task_complete)
+  let headerTitle = title;
+  if (summary && type === 'task_complete') {
+    const branchPart = summary.gitBranch ? `[${summary.gitBranch}]` : '';
+    const sessionPart = summary.sessionShortId ? `#${summary.sessionShortId}` : '';
+    if (branchPart || sessionPart) {
+      headerTitle = `✅ ${branchPart} / ${sessionPart}`;
+    }
+  }
+
   return {
     config: {
       wide_screen_mode: true,
-      update_multi: true, // 启用多人更新，确保卡片状态持久化
+      update_multi: true, // Phase3: 启用多人更新，确保卡片状态持久化
     },
     header: {
       title: {
         tag: 'plain_text',
-        content: title,
+        content: headerTitle,
       },
       template: headerColor[type] || 'blue',
     },

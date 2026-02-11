@@ -5,6 +5,8 @@ import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/m
 import { getOrCreateProjectGroup } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
 import { registerMessageSession } from '../services/message-session-map.js';
+import { alertScheduler } from '../services/voice-alert.js';
+import { log } from '../utils/log.js';
 import type { RawSummary, StopHookPayload } from '../types/summary.js';
 
 export const hookRouter = Router();
@@ -77,6 +79,17 @@ hookRouter.post('/stop', async (req, res) => {
     // 注册 message → session 映射
     if (result?.messageId && session_id) {
       registerMessageSession(result.messageId, session_id, result.chatId, summary?.projectPath);
+    }
+
+    // Phase4: 安排任务完成超时提醒（向群发送，与其他phase一致）
+    if (result?.messageId && chatId && process.env.FEISHU_VOICE_ENABLED === 'true') {
+      const delayMinutes = parseInt(process.env.VOICE_ALERT_TASK_COMPLETE_DELAY_MINUTES || '10');
+      alertScheduler.scheduleAlert(result.messageId, {
+        chatId,
+        sessionId: session_id,
+        type: 'task_complete',
+        delayMinutes,
+      });
     }
 
     // 异步生成 Haiku 摘要并更新卡片
@@ -233,34 +246,6 @@ hookRouter.post('/authorization', async (req, res) => {
     const body = req.body;
     console.log('📨 Authorization request received:', JSON.stringify(body, null, 2));
 
-    // Extract useful info from the notification payload
-    const title = body.title || '⚠️ Claude 需要你的操作';
-    const message = body.message || body.body || '';
-    const sessionId = body.session_id || 'unknown';
-
-    await sendCardMessage({
-      type: 'authorization_required',
-      title,
-      content: message || '请在终端中确认操作',
-      sessionId,
-    });
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Hook authorization error:', error);
-    res.status(500).json({ error: 'Failed to send notification' });
-  }
-});
-
-/**
- * POST /api/hook/authorization
- * Called when Claude Code needs user authorization (Notification hook event)
- */
-hookRouter.post('/authorization', async (req, res) => {
-  try {
-    const body = req.body;
-    console.log('📨 Authorization request received:', JSON.stringify(body, null, 2));
-
     const title = body.title || '⚠️ Claude 需要你的操作';
     const message = body.message || body.body || '';
     const sessionId = body.session_id || 'unknown';
@@ -289,9 +274,21 @@ hookRouter.post('/authorization', async (req, res) => {
       registerMessageSession(result.messageId, sessionId, result.chatId, cwd);
     }
 
+    // Phase4: 安排授权请求超时提醒
+    if (result?.messageId && chatId && process.env.FEISHU_VOICE_ENABLED === 'true') {
+      const delayMinutes = parseInt(process.env.VOICE_ALERT_AUTHORIZATION_DELAY_MINUTES || '5');
+      alertScheduler.scheduleAlert(result.messageId, {
+        chatId,
+        sessionId,
+        type: 'authorization',
+        delayMinutes,
+      });
+    }
+
     res.json({ success: true });
   } catch (error) {
     console.error('Hook authorization error:', error);
     res.status(500).json({ error: 'Failed to send notification' });
   }
 });
+

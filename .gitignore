@@ -28,3 +28,6 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 apps/server/dist/
+
+# Runtime data
+apps/server/data/

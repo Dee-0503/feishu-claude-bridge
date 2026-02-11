@@ -32,7 +32,7 @@ const SAFE_COMMANDS = [
   // Safe file operations
   /^(mkdir|touch|cp|mv|chmod|chown|ln)\b/,
   // Safe git (read-only + local-only)
-  /^git\s+(status|log|diff|branch|show|remote|tag|stash|rev-parse|config|add|commit|checkout|switch|merge|rebase|reset|cherry-pick|bisect|blame|shortlog|describe|fetch)\b/,
+  /^git\s+(status|log|diff|branch|show|remote|tag|stash|rev-parse|config|add|commit|checkout|switch|merge|rebase|reset|cherry-pick|bisect|blame|shortlog|describe|fetch|rm|restore|clean)\b/,
   // Dev tools (run, build, test, install — not publish/push)
   /^(node|python|python3|ruby|java|go|rustc|cargo)\b/,
   /^(npm|pnpm|yarn|bun|deno)\s+(install|ci|run|exec|test|build|start|dev|init|create|info|list|ls|outdated|audit|why|pack|link|unlink|--version)\b/,

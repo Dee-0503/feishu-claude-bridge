@@ -6,10 +6,10 @@ import {
 
 describe('group utilities', () => {
   describe('extractProjectName', () => {
-    it('should extract project name from worktree path', () => {
+    it('should use basename for worktree path', () => {
       expect(
         extractProjectName('/Users/ceemac/my_product/feishu-claude-bridge-worktrees/phase2')
-      ).toBe('feishu-claude-bridge');
+      ).toBe('phase2');
     });
 
     it('should return basename for non-worktree path', () => {
@@ -18,18 +18,18 @@ describe('group utilities', () => {
       ).toBe('my-project');
     });
 
-    it('should handle nested worktree paths', () => {
+    it('should use basename for nested worktree paths', () => {
       expect(
         extractProjectName('/home/user/some-project-worktrees/feature-branch')
-      ).toBe('some-project');
+      ).toBe('feature-branch');
     });
   });
 
   describe('getNormalizedProjectPath', () => {
-    it('should normalize worktree path to main project path', () => {
+    it('should return path as-is (no normalization)', () => {
       expect(
         getNormalizedProjectPath('/Users/ceemac/my_product/feishu-claude-bridge-worktrees/phase3')
-      ).toBe('/Users/ceemac/my_product/feishu-claude-bridge');
+      ).toBe('/Users/ceemac/my_product/feishu-claude-bridge-worktrees/phase3');
     });
 
     it('should return same path for non-worktree path', () => {

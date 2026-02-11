@@ -1,7 +1,5 @@
+import { feishuClient } from '../feishu/client.js';
 import { log } from '../utils/log.js';
-
-// 飞书语音通知 API（文档参考：https://open.feishu.cn/document/server-docs/im-v1/message/create）
-// 注意：真实的飞书语音通知需要企业版权限，这里提供接口框架
 
 interface VoiceAlertConfig {
   userId: string;
@@ -11,46 +9,76 @@ interface VoiceAlertConfig {
 }
 
 /**
- * 发送飞书语音提醒（电话通知）
- * 对于高风险命令，触发电话播报引导用户查看飞书卡片
+ * 发送飞书紧急消息（加急提醒，会触发电话/短信通知）
+ *
+ * 飞书加急消息特性：
+ * - 接收者会收到电话铃声、弹窗、短信等强提醒
+ * - 需要企业版权限
+ * - 使用 msg_type: 'text' + urgent 参数
+ *
+ * API文档：https://open.feishu.cn/document/server-docs/im-v1/message/create
  */
 export async function sendVoiceAlert(config: VoiceAlertConfig): Promise<void> {
   const { userId, command, projectPath, sessionId } = config;
 
+  if (!userId) {
+    log('warn', 'voice_alert_no_userid', { command });
+    return;
+  }
+
   try {
-    // 飞书语音通知需要企业版权限
-    // 这里提供接口框架，实际部署时需要配置对应权限
+    const alertMessage = `【Claude Code 高风险操作警告】\n\n检测到危险命令：${command}\n项目：${projectPath}\n会话：${sessionId.substring(0, 8)}\n\n⚠️ 请立即打开飞书查看授权卡片进行确认`;
 
-    const alertMessage = `Claude Code检测到高风险操作：${command}。请立即查看飞书消息进行授权确认。`;
-
-    log('info', 'voice_alert_triggered', {
+    log('info', 'voice_alert_sending', {
       userId,
       command,
       projectPath,
       sessionId,
     });
 
-    // TODO: 实际调用飞书语音通知API
-    // await feishuClient.request({
-    //   method: 'POST',
-    //   url: '/open-apis/message/v4/send/',
-    //   data: {
-    //     open_id: userId,
-    //     msg_type: 'voice',
-    //     content: {
-    //       text: alertMessage
-    //     }
-    //   }
-    // });
+    // 使用飞书SDK发送加急文本消息
+    // urgent: true 会触发电话铃声+弹窗+短信（需企业版权限）
+    const response = await feishuClient.im.message.create({
+      params: {
+        receive_id_type: 'open_id',
+      },
+      data: {
+        receive_id: userId,
+        msg_type: 'text',
+        content: JSON.stringify({ text: alertMessage }),
+        // 关键参数：urgent = true 触发加急提醒（电话铃声）
+        // @ts-ignore - SDK类型定义可能未包含此参数
+        urgent: {
+          is_urgent: true,
+          urgent_reason: '高风险命令需要立即确认',
+        },
+      },
+    });
 
-    log('info', 'voice_alert_sent', { userId, command });
-  } catch (error) {
-    // 电话失败不应阻断授权流程，仅记录日志
-    log('error', 'voice_alert_failed', {
+    if (response.code === 0) {
+      log('info', 'voice_alert_sent_success', {
+        userId,
+        command,
+        messageId: response.data?.message_id,
+      });
+    } else {
+      log('error', 'voice_alert_api_error', {
+        code: response.code,
+        msg: response.msg,
+        userId,
+        command,
+      });
+    }
+  } catch (error: any) {
+    // 电话通知失败不应阻断授权流程，仅记录日志
+    log('error', 'voice_alert_exception', {
       error: String(error),
+      errorMessage: error.message,
       userId,
       command,
     });
+
+    // 不抛出异常，避免影响主流程
   }
 }
 

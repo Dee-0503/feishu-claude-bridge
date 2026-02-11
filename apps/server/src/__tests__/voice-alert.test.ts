@@ -96,7 +96,6 @@ describe('voice-alert', () => {
 
       alertScheduler.scheduleAlert('msg_123', {
         chatId: 'chat_123',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_123',
         type: 'authorization',
         delayMinutes: 5,
@@ -113,7 +112,6 @@ describe('voice-alert', () => {
 
       alertScheduler.scheduleAlert('msg_123', {
         chatId: 'chat_123',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_123',
         type: 'authorization',
         delayMinutes: 5,
@@ -138,7 +136,6 @@ describe('voice-alert', () => {
 
       alertScheduler.scheduleAlert('msg_123', {
         chatId: 'chat_123',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_123',
         type: 'authorization',
         delayMinutes: 5,
@@ -153,7 +150,6 @@ describe('voice-alert', () => {
 
       alertScheduler.scheduleAlert('msg_1', {
         chatId: 'chat_1',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_1',
         type: 'authorization',
         delayMinutes: 5,
@@ -161,7 +157,6 @@ describe('voice-alert', () => {
 
       alertScheduler.scheduleAlert('msg_2', {
         chatId: 'chat_2',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_2',
         type: 'task_complete',
         delayMinutes: 10,
@@ -179,7 +174,6 @@ describe('voice-alert', () => {
 
       alertScheduler.scheduleAlert('msg_123', {
         chatId: 'chat_123',
-        adminUserId: 'ou_admin',
         sessionId: 'sess_123',
         type: 'authorization',
         delayMinutes: 5,

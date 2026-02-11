@@ -31,12 +31,9 @@
 
 **方法1：通过API获取**
 ```bash
-curl -X POST 'https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id' \
-  -H 'Authorization: Bearer YOUR_TENANT_ACCESS_TOKEN' \
+curl -X POST 'https://open.feishu.cn/open-apis/user/v4/app_admin_user/list' \
+  -H 'Authorization: Bearer t-g1042b8QMRV7UPGE2BYKNHSLL65225DJA5C3IF7D' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "emails": ["admin@company.com"]
-  }'
 ```
 
 **方法2：通过飞书管理后台**

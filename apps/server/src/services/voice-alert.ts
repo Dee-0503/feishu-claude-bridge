@@ -4,7 +4,6 @@ import { log } from '../utils/log.js';
 interface PendingAlert {
   messageId: string;
   chatId: string;
-  adminUserId: string;
   sessionId: string;
   type: 'authorization' | 'task_complete';
   createdAt: Date;
@@ -21,7 +20,6 @@ interface WorkingHoursConfig {
 
 interface ScheduleAlertConfig {
   chatId: string;
-  adminUserId: string;
   sessionId: string;
   type: 'authorization' | 'task_complete';
   delayMinutes: number;
@@ -55,7 +53,7 @@ class AlertScheduler {
       messageId,
       type: config.type,
       delayMinutes: config.delayMinutes,
-      adminUserId: config.adminUserId,
+      chatId: config.chatId,
     });
 
     // 创建延迟定时器
@@ -69,7 +67,6 @@ class AlertScheduler {
     this.pendingAlerts.set(messageId, {
       messageId,
       chatId: config.chatId,
-      adminUserId: config.adminUserId,
       sessionId: config.sessionId,
       type: config.type,
       createdAt: new Date(),
@@ -110,16 +107,17 @@ class AlertScheduler {
       log('info', 'voice_alert_sending', {
         messageId,
         type: alert.type,
-        adminUserId: alert.adminUserId,
+        chatId: alert.chatId,
         waitedMinutes,
       });
 
+      // 向群发送加急消息（与其他phase保持一致）
       const response = await feishuClient.im.message.create({
         params: {
-          receive_id_type: 'open_id',
+          receive_id_type: 'chat_id',
         },
         data: {
-          receive_id: alert.adminUserId,
+          receive_id: alert.chatId,
           msg_type: 'text',
           content: JSON.stringify({ text: message }),
           // 关键参数：urgent = true 触发加急提醒（电话铃声 + 弹窗 + 短信）
@@ -135,7 +133,7 @@ class AlertScheduler {
         log('info', 'voice_alert_sent_success', {
           messageId,
           type: alert.type,
-          adminUserId: alert.adminUserId,
+          chatId: alert.chatId,
           urgentMessageId: response.data?.message_id,
         });
       } else {

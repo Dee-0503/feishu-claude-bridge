@@ -2,7 +2,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { Router } from 'express';
 import { sendTextMessage, sendCardMessage, updateCardMessage } from '../feishu/message.js';
-import { getOrCreateProjectGroup, getAdminUserIdForProject } from '../feishu/group.js';
+import { getOrCreateProjectGroup } from '../feishu/group.js';
 import { generateTaskSummary, generateDefaultSummary } from '../services/summary.js';
 import { registerMessageSession } from '../services/message-session-map.js';
 import { alertScheduler } from '../services/voice-alert.js';
@@ -81,19 +81,15 @@ hookRouter.post('/stop', async (req, res) => {
       registerMessageSession(result.messageId, session_id, result.chatId, summary?.projectPath);
     }
 
-    // Phase4: 安排任务完成超时提醒
-    if (result?.messageId && chatId && summary?.projectPath && process.env.FEISHU_VOICE_ENABLED === 'true') {
-      const adminUserId = await getAdminUserIdForProject(summary.projectPath).catch(() => null);
-      if (adminUserId) {
-        const delayMinutes = parseInt(process.env.VOICE_ALERT_TASK_COMPLETE_DELAY_MINUTES || '10');
-        alertScheduler.scheduleAlert(result.messageId, {
-          chatId,
-          adminUserId,
-          sessionId: session_id,
-          type: 'task_complete',
-          delayMinutes,
-        });
-      }
+    // Phase4: 安排任务完成超时提醒（向群发送，与其他phase一致）
+    if (result?.messageId && chatId && process.env.FEISHU_VOICE_ENABLED === 'true') {
+      const delayMinutes = parseInt(process.env.VOICE_ALERT_TASK_COMPLETE_DELAY_MINUTES || '10');
+      alertScheduler.scheduleAlert(result.messageId, {
+        chatId,
+        sessionId: session_id,
+        type: 'task_complete',
+        delayMinutes,
+      });
     }
 
     // 异步生成 Haiku 摘要并更新卡片

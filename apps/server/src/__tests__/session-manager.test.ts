@@ -12,8 +12,15 @@ vi.mock('../feishu/client.js', () => ({
   feishuClient: {
     im: {
       message: {
-        create: vi.fn().mockResolvedValue({ data: { message_id: 'mock-msg-id' } }),
-        patch: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockResolvedValue({
+          code: 0,
+          msg: 'success',
+          data: { message_id: 'mock-msg-id' },
+        }),
+        patch: vi.fn().mockResolvedValue({
+          code: 0,
+          msg: 'success',
+        }),
       },
     },
   },
@@ -27,6 +34,7 @@ vi.mock('../feishu/group.js', () => ({
   saveGroupMapping: vi.fn(),
   extractProjectName: vi.fn().mockReturnValue('test'),
   getNormalizedProjectPath: vi.fn((p: string) => p),
+  markChatInvalid: vi.fn(),
 }));
 
 // Mock message-session-map

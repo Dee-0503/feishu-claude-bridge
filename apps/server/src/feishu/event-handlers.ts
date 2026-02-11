@@ -9,11 +9,34 @@ import { updateCardMessage, buildCard } from './message.js';
 import { getChineseAuthOption } from '../types/auth.js';
 import { getNormalizedProjectPath } from './group.js';
 import { log } from '../utils/log.js';
+import { execSync } from 'child_process';
+import path from 'path';
 
-// Phase3: Helper function to build title tag from tool name
-export function buildTitleTag(cwd: string | undefined, sessionId: string): string {
-  // 简化版本：返回session标识，忽略cwd的tool信息
-  return `#${sessionId.substring(0, 8)}`;
+// Phase3: Helper function to build title tag
+export function buildTitleTag(cwd?: string, sessionId?: string): string {
+  const parts: string[] = [];
+  if (cwd) {
+    let label: string;
+    try {
+      label = execSync('git branch --show-current', {
+        cwd,
+        encoding: 'utf-8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      label = '';
+      log('warn', 'git_branch_fallback', { cwd, reason: 'git command failed' });
+    }
+    if (!label) {
+      label = path.basename(cwd);
+    }
+    parts.push(`[${label}]`);
+  }
+  if (sessionId) {
+    parts.push(`#${sessionId.substring(0, 4)}`);
+  }
+  return parts.join(' / ');
 }
 
 /**
@@ -190,22 +213,19 @@ export async function handleCardAction(
 
       const cardJson = buildCard(cardOptions);
 
-      // WebSocket 模式：双重保险策略
-      // 1. 调用 API 更新卡片（确保持久化）
-      // 2. 也返回卡片 JSON（防止 WebSocket 响应覆盖 API 更新）
-      if (options?.mode === 'websocket' && authReq.feishuMessageId) {
-        log('info', 'card_response_dual_update', { requestId, type: 'duplicate', messageId: authReq.feishuMessageId });
-
-        // API 更新（不等待，让它异步执行）
+      // 所有模式都调用 API 更新卡片
+      if (authReq.feishuMessageId) {
+        log('info', 'card_response_api_update_duplicate', { requestId, type: 'duplicate', messageId: authReq.feishuMessageId, mode: options?.mode || 'unknown' });
         updateCardMessage(authReq.feishuMessageId, cardOptions).catch(err => {
           log('error', 'card_api_update_failed', { requestId, error: String(err) });
         });
+      }
 
-        // 同时返回卡片 JSON 用于响应式更新（双重保险）
+      // WebSocket 模式：额外返回卡片 JSON 用于响应式更新
+      if (options?.mode === 'websocket') {
         return cardJson;
       } else if (options?.mode === 'http') {
-        log('info', 'card_response_built', { requestId, mode: 'http', type: 'duplicate' });
-        return cardJson;
+        return null;
       }
 
       return null;
@@ -284,22 +304,22 @@ export async function handleCardAction(
 
       const cardJson = buildCard(cardOptions);
 
-      // WebSocket 模式：双重保险策略
-      // 1. 调用 API 更新卡片（确保持久化）
-      // 2. 也返回卡片 JSON（防止 WebSocket 响应覆盖 API 更新）
-      if (options?.mode === 'websocket' && authReq.feishuMessageId) {
-        log('info', 'card_response_dual_update', { requestId, messageId: authReq.feishuMessageId });
+      // 所有模式都调用 API 更新卡片
+      if (authReq.feishuMessageId) {
+        log('info', 'card_response_api_update', { requestId, messageId: authReq.feishuMessageId, mode: options?.mode || 'unknown' });
 
         // API 更新（不等待，让它异步执行）
         updateCardMessage(authReq.feishuMessageId, cardOptions).catch(err => {
           log('error', 'card_api_update_failed', { requestId, error: String(err) });
         });
+      }
 
-        // 同时返回卡片 JSON 用于响应式更新（双重保险）
+      // WebSocket 模式：额外返回卡片 JSON 用于响应式更新（双重保险）
+      if (options?.mode === 'websocket') {
         return cardJson;
       } else if (options?.mode === 'http') {
-        log('info', 'card_response_built', { requestId, mode: 'http' });
-        return cardJson;
+        // HTTP 模式：只需 API 更新即可，不需要返回 cardJson（因为响应已发送）
+        return null;
       }
 
       return null;

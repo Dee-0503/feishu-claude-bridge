@@ -10,13 +10,13 @@ vi.mock('child_process', () => ({
 }));
 
 // Mock feishu client
-const mockCreate = vi.fn().mockResolvedValue({ data: { message_id: 'mock-msg-id' } });
+const mockCreate = vi.fn().mockResolvedValue({ code: 0, msg: 'success', data: { message_id: 'mock-msg-id' } });
 vi.mock('../feishu/client.js', () => ({
   feishuClient: {
     im: {
       message: {
         create: (...args: any[]) => mockCreate(...args),
-        patch: vi.fn().mockResolvedValue({}),
+        patch: vi.fn().mockResolvedValue({ code: 0, msg: 'success' }),
       },
       chat: {
         create: vi.fn().mockResolvedValue({ data: { chat_id: 'mock-chat-id' } }),
@@ -33,6 +33,7 @@ vi.mock('../feishu/group.js', () => ({
   saveGroupMapping: vi.fn(),
   extractProjectName: vi.fn().mockReturnValue('test-project'),
   getNormalizedProjectPath: vi.fn((p: string) => p),
+  markChatInvalid: vi.fn(),
 }));
 
 function createMockProcess() {

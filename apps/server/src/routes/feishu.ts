@@ -7,6 +7,7 @@ import { getSessionByMessageId } from '../services/message-session-map.js';
 import { dispatch, handleSessionChoice } from '../services/session-manager.js';
 import { alertScheduler } from '../services/voice-alert.js';
 import { log } from '../utils/log.js';
+import { handleCardAction as handleAuthCardAction } from '../feishu/event-handlers.js';
 
 export const feishuRouter = Router();
 
@@ -280,9 +281,9 @@ async function handleCardAction(event: FeishuCardActionEvent): Promise<void> {
   }
 
   // Phase 3: 处理授权响应
-  if (value.action && value.sessionId) {
+  if (value.requestId) {
     console.log('📌 Authorization action (Phase 3):', value);
-    // TODO: Phase 3 - Handle authorization response
+    await handleAuthCardAction(event, { mode: 'http' });
     return;
   }
 }
